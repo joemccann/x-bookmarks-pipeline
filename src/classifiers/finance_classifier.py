@@ -1,9 +1,10 @@
 """
-Bookmark Classifier — uses xAI Grok to classify tweets by category/subcategory.
+Bookmark Classifier — uses Cerebras for fast text classification and
+xAI Grok for image/vision classification.
 
 Two-phase classification:
-  1. Analyze tweet text
-  2. If text is non-finance but images exist, analyze images via vision
+  1. Analyze tweet text (Cerebras — fast)
+  2. If text is non-finance but images exist, analyze images via vision (xAI Grok)
 
 Every bookmark gets a category/subcategory. Finance bookmarks continue
 through the full Pine Script pipeline.
@@ -14,7 +15,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional
 
-from src.clients.xai_client import XAIClient
 from src.clients.base_client import ClientError
 from src.prompts.classification_prompts import (
     FINANCE_TEXT_CLASSIFICATION_PROMPT,
@@ -44,10 +44,28 @@ class ClassificationError(Exception):
 
 
 class BookmarkClassifier:
-    """Two-phase bookmark classifier using xAI Grok."""
+    """Two-phase bookmark classifier: Cerebras (text) + xAI Grok (vision)."""
 
-    def __init__(self, client: Optional[XAIClient] = None) -> None:
-        self.client = client or XAIClient()
+    def __init__(
+        self,
+        text_client=None,
+        vision_client=None,
+        # Backward-compatible: single `client` kwarg uses same client for both
+        client=None,
+    ) -> None:
+        if client is not None:
+            # Legacy single-client mode
+            self.text_client = client
+            self.vision_client = client
+        else:
+            if text_client is None:
+                from src.clients.cerebras_client import CerebrasClient
+                text_client = CerebrasClient()
+            if vision_client is None:
+                from src.clients.xai_client import XAIClient
+                vision_client = XAIClient()
+            self.text_client = text_client
+            self.vision_client = vision_client
 
     def classify(
         self,
@@ -64,7 +82,7 @@ class BookmarkClassifier:
             image_urls=image_urls,
         )
 
-        # Phase 1: text classification
+        # Phase 1: text classification (Cerebras — fast)
         text_result = self._classify_text(text)
         self._apply_result(result, text_result, source="text")
 
@@ -72,7 +90,7 @@ class BookmarkClassifier:
         if result.is_finance:
             return result
 
-        # Phase 2: image classification (if text was non-finance)
+        # Phase 2: image classification (xAI Grok — vision)
         if image_urls:
             image_result = self._classify_images(image_urls)
             if image_result.get("is_finance"):
@@ -102,21 +120,21 @@ class BookmarkClassifier:
         result.summary = data.get("summary", "")
 
     def _classify_text(self, text: str) -> dict:
-        """Classify tweet text via Grok."""
+        """Classify tweet text via Cerebras."""
         messages = [
             {"role": "system", "content": FINANCE_TEXT_CLASSIFICATION_PROMPT},
             {"role": "user", "content": text},
         ]
         try:
-            response = self.client.chat(messages=messages, max_tokens=512)
+            response = self.text_client.chat(messages=messages, max_tokens=512)
             return self._parse_json(response.content)
         except ClientError as e:
             raise ClassificationError(f"Text classification failed: {e}")
 
     def _classify_images(self, image_urls: list[str]) -> dict:
-        """Classify chart images via Grok vision."""
+        """Classify chart images via xAI Grok vision."""
         try:
-            response = self.client.chat_with_vision(
+            response = self.vision_client.chat_with_vision(
                 system_prompt=FINANCE_IMAGE_CLASSIFICATION_PROMPT,
                 text_prompt="Analyze these images and classify them.",
                 image_urls=image_urls,

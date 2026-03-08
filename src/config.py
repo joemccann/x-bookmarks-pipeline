@@ -23,6 +23,7 @@ def _env_float(key: str, default: float) -> float:
 # ---------------------------------------------------------------------------
 # Models (override via env vars or CLI)
 # ---------------------------------------------------------------------------
+CEREBRAS_MODEL = _env("CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507")
 XAI_MODEL = _env("XAI_MODEL", "grok-4-0709")
 ANTHROPIC_MODEL = _env("ANTHROPIC_MODEL", "claude-opus-4-6")
 OPENAI_MODEL = _env("OPENAI_MODEL", "gpt-5.4")

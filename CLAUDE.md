@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-X Bookmarks Pipeline — categorizes ALL X (Twitter) bookmarks by topic and generates executable TradingView Pine Script v6 strategies/indicators for finance bookmarks via a multi-LLM pipeline (xAI Grok + Claude Opus + ChatGPT).
+X Bookmarks Pipeline — categorizes ALL X (Twitter) bookmarks by topic and generates executable TradingView Pine Script v6 strategies/indicators for finance bookmarks via a multi-LLM pipeline (Cerebras + xAI Grok + Claude Opus + ChatGPT).
 
 Every bookmark gets classified with a `category`/`subcategory` and saved as `.meta.json`. Finance bookmarks additionally get vision analysis, strategy planning, and Pine Script generation.
 
@@ -12,14 +12,16 @@ Every bookmark gets classified with a `category`/`subcategory` and saved as `.me
 - `httpx` for HTTP (all LLM API calls — no SDKs)
 - `rich` for CLI output formatting
 - `sqlite3` for bookmark caching
-- xAI Grok (`grok-4-0709`) for tweet classification (category + finance detection)
+- Cerebras (`qwen-3-235b-a22b-instruct-2507`) for fast text classification (~46x faster than xAI)
+- xAI Grok (`grok-4-0709`) for image/vision classification (fallback when text is non-finance)
 - Claude Opus (`claude-opus-4-6`) for vision analysis + strategy planning
 - ChatGPT (`gpt-5.4`) for Pine Script code generation
 
 ## Pipeline Flow
 
 ```
-Bookmark → [xAI] Classify (category, subcategory, is_finance, has_visual_data)
+Bookmark → [Cerebras] Classify text (category, subcategory, is_finance, has_visual_data)
+  → if non-finance + has images: [xAI Grok] Classify images (vision fallback)
   → ALL bookmarks: save .meta.json to output/{category}/{subcategory}/
   → if has images AND (is_finance OR has_visual_data): [Claude] vision → chart_data
   → if is_finance: [Claude] plan → [ChatGPT] generate .pine → validate
@@ -33,11 +35,12 @@ No bookmarks are discarded. Every bookmark gets a `.meta.json`. Finance bookmark
 src/
 ├── clients/
 │   ├── base_client.py              # Shared httpx wrapper
-│   ├── xai_client.py               # xAI Grok (classification)
+│   ├── cerebras_client.py          # Cerebras (fast text classification)
+│   ├── xai_client.py               # xAI Grok (image/vision classification)
 │   ├── anthropic_client.py         # Claude Opus (planning + vision)
 │   └── openai_client.py            # ChatGPT (code generation)
 ├── classifiers/
-│   └── finance_classifier.py       # BookmarkClassifier: two-phase text→image (category + finance)
+│   └── finance_classifier.py       # BookmarkClassifier: Cerebras text + xAI vision (category + finance)
 ├── planners/
 │   └── strategy_planner.py         # Strategy vs indicator planning
 ├── generators/
@@ -90,7 +93,8 @@ python main.py --clear-cache
 
 | Variable | Required | Provider |
 |---|---|---|
-| `XAI_API_KEY` | Always | xAI (classification) |
+| `CEREBRAS_API_KEY` | Always | Cerebras (text classification) |
+| `XAI_API_KEY` | Always | xAI (image classification) |
 | `ANTHROPIC_API_KEY` | Always | Anthropic (planning + vision) |
 | `OPENAI_API_KEY` | Always | OpenAI (code generation) |
 | `X_USER_ACCESS_TOKEN` | `--fetch` mode | X API (bookmarks) |
@@ -105,7 +109,8 @@ All defaults live in `src/config.py` and can be overridden via env vars:
 
 | Variable | Default | What it controls |
 |---|---|---|
-| `XAI_MODEL` | `grok-4-0709` | Classification model |
+| `CEREBRAS_MODEL` | `qwen-3-235b-a22b-instruct-2507` | Text classification model |
+| `XAI_MODEL` | `grok-4-0709` | Image classification model |
 | `ANTHROPIC_MODEL` | `claude-opus-4-6` | Vision + planning model |
 | `OPENAI_MODEL` | `gpt-5.4` | Code generation model |
 | `API_TIMEOUT` | `120` | LLM API timeout (seconds) |
@@ -124,7 +129,7 @@ Located at `cache/bookmarks.db`. Caches each pipeline stage independently:
 | Column | Content |
 |---|---|
 | `tweet_id` | Primary key |
-| `classification_json` | xAI classification result (category, subcategory, is_finance) |
+| `classification_json` | Cerebras/xAI classification result (category, subcategory, is_finance) |
 | `plan_json` | Claude strategy/indicator plan |
 | `pine_script` | Generated Pine Script code |
 | `validation_passed` | Boolean |
@@ -193,4 +198,4 @@ Generated scripts must follow these rules (enforced by the system prompt, self-v
 python3 -m pytest tests/ -v
 ```
 
-127 tests covering clients, classifier, planner, cache, generator, pipeline, validator, vision analyzer, and CLI.
+134 tests covering clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, and CLI.

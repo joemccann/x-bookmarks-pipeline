@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.joemccann.x-bookmarks-pipeline</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/joemccann/dev/apps/util/x-bookmarks-pipeline/service.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/joemccann/dev/apps/util/x-bookmarks-pipeline</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/joemccann/dev/apps/util/x-bookmarks-pipeline</string>
+    </dict>
+
+    <!-- Run every 900 seconds (15 minutes) -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <!-- Also run immediately when loaded -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep alive: restart if the process exits unexpectedly -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Logging -->
+    <key>StandardOutPath</key>
+    <string>/Users/joemccann/.local/log/x-bookmarks-pipeline.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/joemccann/.local/log/x-bookmarks-pipeline.stderr.log</string>
+
+    <!-- Resource limits -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>

@@ -8,7 +8,8 @@ import httpx
 
 from src.clients.base_client import BaseClient, ClientError, LLMResponse
 from src.clients.xai_client import XAIClient
-from src.config import XAI_MODEL, ANTHROPIC_MODEL, OPENAI_MODEL
+from src.clients.cerebras_client import CerebrasClient
+from src.config import XAI_MODEL, CEREBRAS_MODEL, ANTHROPIC_MODEL, OPENAI_MODEL
 from src.clients.anthropic_client import AnthropicClient
 from src.clients.openai_client import OpenAIClient
 
@@ -163,4 +164,44 @@ class TestOpenAIClient:
         client = OpenAIClient(api_key="test-openai-key")
         with patch.object(client, "_post", return_value={"unexpected": True}):
             with pytest.raises(ClientError, match="Unexpected OpenAI response"):
+                client.chat(messages=[{"role": "user", "content": "hi"}])
+
+
+# ---------------------------------------------------------------------------
+# CerebrasClient
+# ---------------------------------------------------------------------------
+
+class TestCerebrasClient:
+    def test_missing_api_key_raises(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(ValueError, match="Cerebras API key"):
+                CerebrasClient(api_key="")
+
+    def test_chat_sends_bearer_auth(self):
+        client = CerebrasClient(api_key="test-cerebras-key")
+        assert client.headers["Authorization"] == "Bearer test-cerebras-key"
+
+    def test_base_url_is_cerebras(self):
+        client = CerebrasClient(api_key="test-cerebras-key")
+        assert "cerebras.ai" in client.base_url
+
+    def test_default_model_from_config(self):
+        client = CerebrasClient(api_key="test-cerebras-key")
+        assert client.model == CEREBRAS_MODEL
+
+    def test_chat_returns_llm_response(self):
+        client = CerebrasClient(api_key="test-cerebras-key")
+        with patch.object(client, "_post", return_value={
+            "choices": [{"message": {"content": "classified"}}],
+            "model": CEREBRAS_MODEL,
+            "usage": {"total_tokens": 50},
+        }):
+            resp = client.chat(messages=[{"role": "user", "content": "classify this"}])
+            assert isinstance(resp, LLMResponse)
+            assert resp.content == "classified"
+
+    def test_chat_bad_response_raises(self):
+        client = CerebrasClient(api_key="test-cerebras-key")
+        with patch.object(client, "_post", return_value={"bad": "response"}):
+            with pytest.raises(ClientError, match="Unexpected Cerebras response"):
                 client.chat(messages=[{"role": "user", "content": "hi"}])

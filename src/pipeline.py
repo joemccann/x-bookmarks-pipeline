@@ -3,7 +3,7 @@ Multi-LLM Pipeline Orchestrator — end-to-end flow from raw bookmark to
 categorized output with optional Pine Script v6 generation.
 
 Flow:
-  Classify (xAI) → [Vision if images] → [Plan + Generate if finance] → Save all
+  Classify (Cerebras text + xAI vision) → [Claude Vision if images] → [Plan + Generate if finance] → Save all
 
 Every bookmark gets a .meta.json in output/{category}/{subcategory}/.
 Finance bookmarks additionally get .pine files.
@@ -48,7 +48,7 @@ class PipelineResult:
 
 
 class MultiLLMPipeline:
-    """Orchestrates: classify (xAI) → vision (Claude) → plan (Claude) → generate (ChatGPT) → validate → save."""
+    """Orchestrates: classify (Cerebras+xAI) → vision (Claude) → plan (Claude) → generate (ChatGPT) → validate → save."""
 
     def __init__(
         self,
@@ -56,12 +56,14 @@ class MultiLLMPipeline:
         cache_enabled: bool = True,
         cache_path: str | None = None,
         vision_enabled: bool = True,
+        cerebras_api_key: Optional[str] = None,
         xai_api_key: Optional[str] = None,
         anthropic_api_key: Optional[str] = None,
         openai_api_key: Optional[str] = None,
     ) -> None:
         self.classifier = BookmarkClassifier(
-            client=_make_xai_client(xai_api_key)
+            text_client=_make_cerebras_client(cerebras_api_key),
+            vision_client=_make_xai_client(xai_api_key),
         )
         self.planner = StrategyPlanner(
             client=_make_anthropic_client(anthropic_api_key)
@@ -471,6 +473,11 @@ def _sanitize_path(s: str) -> str:
 # ---------------------------------------------------------------------------
 # Client factory helpers (allow dependency injection for testing)
 # ---------------------------------------------------------------------------
+
+def _make_cerebras_client(api_key: Optional[str] = None):
+    from src.clients.cerebras_client import CerebrasClient
+    return CerebrasClient(api_key=api_key) if api_key else CerebrasClient()
+
 
 def _make_xai_client(api_key: Optional[str] = None):
     from src.clients.xai_client import XAIClient

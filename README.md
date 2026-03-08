@@ -4,8 +4,9 @@ A multi-LLM Python pipeline that fetches your X (Twitter) bookmarks, classifies 
 
 **Every bookmark is categorized and saved.** Finance bookmarks additionally get full Pine Script generation.
 
-Three LLMs, each doing what it's best at:
-- **xAI Grok** — bookmark classification (category/subcategory + finance detection, text first, then image fallback)
+Four LLMs, each doing what it's best at:
+- **Cerebras** — fast text classification (~46x faster than xAI, category/subcategory + finance detection)
+- **xAI Grok** — image/vision classification (fallback when text is non-finance but images contain charts)
 - **Claude Opus** — chart vision analysis (structured JSON extraction) + strategy/indicator planning
 - **ChatGPT** — Pine Script v6 code generation (with self-validation checklist)
 
@@ -16,8 +17,14 @@ X Bookmark (text + chart images)
         │
         ▼
 ┌──────────────────────┐
-│  xAI Grok Classifier │  Category + finance detection
-│  (text → image)      │  Returns: category, subcategory, is_finance, has_visual_data
+│  Cerebras Classifier │  Fast text classification (~0.3s)
+│  (Qwen 3 235B)      │  Returns: category, subcategory, is_finance, has_visual_data
+└────────┬─────────────┘
+         │ non-finance + has images?
+         ▼
+┌──────────────────────┐
+│  xAI Grok Vision     │  Image classification fallback
+│  (if text non-finance)│  Detects charts in images
 └────────┬─────────────┘
          │ ClassificationResult
          ▼
@@ -69,7 +76,8 @@ cp .env.example .env
 
 | Variable | Provider | Purpose |
 |---|---|---|
-| `XAI_API_KEY` | [console.x.ai](https://console.x.ai/) | Tweet classification |
+| `CEREBRAS_API_KEY` | [cerebras.ai](https://cloud.cerebras.ai/) | Fast text classification |
+| `XAI_API_KEY` | [console.x.ai](https://console.x.ai/) | Image/vision classification |
 | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) | Vision analysis + strategy planning |
 | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/) | Pine Script code generation |
 
@@ -203,7 +211,7 @@ The pipeline caches results in `cache/bookmarks.db` so bookmarks are never re-pr
 
 | Stage | Column | Cached After |
 |-------|--------|-------------|
-| Classification | `classification_json` | xAI determines category + finance detection |
+| Classification | `classification_json` | Cerebras/xAI determines category + finance detection |
 | Vision | `chart_data_json` | Claude analyzes chart images |
 | Plan | `plan_json` | Claude creates strategy/indicator plan |
 | Script | `pine_script` | ChatGPT generates Pine Script |
@@ -235,11 +243,12 @@ In `--fetch` mode, bookmarks are processed in parallel (up to 5 workers). Each b
 src/
 ├── clients/                        # LLM API wrappers (httpx, no SDKs)
 │   ├── base_client.py
+│   ├── cerebras_client.py          # Cerebras (fast text classification)
 │   ├── xai_client.py
 │   ├── anthropic_client.py
 │   └── openai_client.py
 ├── classifiers/
-│   └── finance_classifier.py       # BookmarkClassifier: category + finance (xAI)
+│   └── finance_classifier.py       # BookmarkClassifier: Cerebras text + xAI vision
 ├── planners/
 │   └── strategy_planner.py         # Strategy/indicator planning (Claude)
 ├── generators/
@@ -262,7 +271,7 @@ src/
 └── pipeline.py                     # Multi-LLM orchestrator
 main.py                             # CLI entrypoint
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
-tests/                              # 127 unit tests
+tests/                              # 134 unit tests
 ```
 
 ## Security
@@ -275,7 +284,7 @@ A pre-commit hook scans all staged files for leaked secrets (API keys, tokens, P
 python3 -m pytest tests/ -v
 ```
 
-127 unit tests covering all modules: clients, classifier, planner, cache, generator, pipeline, validator, vision analyzer, and CLI.
+134 unit tests covering all modules: clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, and CLI.
 
 ## License
 

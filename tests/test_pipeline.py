@@ -18,10 +18,12 @@ from tests.conftest import VALID_STRATEGY_PINE
 @pytest.fixture
 def pipeline(tmp_path):
     """Pipeline with mocked API clients."""
-    with patch("src.pipeline._make_xai_client") as mock_xai, \
+    with patch("src.pipeline._make_cerebras_client") as mock_cerebras, \
+         patch("src.pipeline._make_xai_client") as mock_xai, \
          patch("src.pipeline._make_anthropic_client") as mock_anthropic, \
          patch("src.pipeline._make_openai_client") as mock_openai:
 
+        mock_cerebras.return_value = MagicMock()
         mock_xai.return_value = MagicMock()
         mock_anthropic.return_value = MagicMock()
         mock_openai_inst = MagicMock()
@@ -338,10 +340,12 @@ class TestPipelineCategoryDirs:
 @pytest.fixture
 def vision_pipeline(tmp_path):
     """Pipeline with vision_enabled=True and mocked clients."""
-    with patch("src.pipeline._make_xai_client") as mock_xai, \
+    with patch("src.pipeline._make_cerebras_client") as mock_cerebras, \
+         patch("src.pipeline._make_xai_client") as mock_xai, \
          patch("src.pipeline._make_anthropic_client") as mock_anthropic, \
          patch("src.pipeline._make_openai_client") as mock_openai:
 
+        mock_cerebras.return_value = MagicMock()
         mock_xai.return_value = MagicMock()
         mock_anthropic.return_value = MagicMock()
         mock_openai_inst = MagicMock()

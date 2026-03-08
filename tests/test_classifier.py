@@ -11,23 +11,29 @@ from src.classifiers.finance_classifier import (
     ClassificationResult,
     ClassificationError,
 )
+from src.clients.cerebras_client import CerebrasClient
 from src.clients.xai_client import XAIClient
 from src.clients.base_client import LLMResponse, ClientError
 
 
 @pytest.fixture
-def mock_xai_client():
+def mock_text_client():
+    return MagicMock(spec=CerebrasClient)
+
+
+@pytest.fixture
+def mock_vision_client():
     return MagicMock(spec=XAIClient)
 
 
 @pytest.fixture
-def classifier(mock_xai_client):
-    return BookmarkClassifier(client=mock_xai_client)
+def classifier(mock_text_client, mock_vision_client):
+    return BookmarkClassifier(text_client=mock_text_client, vision_client=mock_vision_client)
 
 
 class TestBookmarkClassification:
-    def test_finance_tweet_detected_via_text(self, classifier, mock_xai_client):
-        mock_xai_client.chat.return_value = LLMResponse(
+    def test_finance_tweet_detected_via_text(self, classifier, mock_text_client):
+        mock_text_client.chat.return_value = LLMResponse(
             content=json.dumps({
                 "is_finance": True,
                 "confidence": 0.95,
@@ -47,8 +53,8 @@ class TestBookmarkClassification:
         assert result.subcategory == "crypto"
         assert result.detected_topic == "crypto"
 
-    def test_non_finance_tweet_categorized(self, classifier, mock_xai_client):
-        mock_xai_client.chat.return_value = LLMResponse(
+    def test_non_finance_tweet_categorized(self, classifier, mock_text_client):
+        mock_text_client.chat.return_value = LLMResponse(
             content=json.dumps({
                 "is_finance": False,
                 "confidence": 0.9,
@@ -66,8 +72,8 @@ class TestBookmarkClassification:
         assert result.category == "other"
         assert result.subcategory == "general"
 
-    def test_technology_tweet_categorized(self, classifier, mock_xai_client):
-        mock_xai_client.chat.return_value = LLMResponse(
+    def test_technology_tweet_categorized(self, classifier, mock_text_client):
+        mock_text_client.chat.return_value = LLMResponse(
             content=json.dumps({
                 "is_finance": False,
                 "confidence": 0.92,
@@ -84,9 +90,9 @@ class TestBookmarkClassification:
         assert result.category == "technology"
         assert result.subcategory == "AI"
 
-    def test_image_fallback_when_text_is_not_finance(self, classifier, mock_xai_client):
-        """When text is non-finance but images contain charts, classify via images."""
-        mock_xai_client.chat.return_value = LLMResponse(
+    def test_image_fallback_when_text_is_not_finance(self, classifier, mock_text_client, mock_vision_client):
+        """When text is non-finance but images contain charts, classify via vision client."""
+        mock_text_client.chat.return_value = LLMResponse(
             content=json.dumps({
                 "is_finance": False,
                 "confidence": 0.1,
@@ -98,7 +104,7 @@ class TestBookmarkClassification:
                 "summary": "Unclear text",
             })
         )
-        mock_xai_client.chat_with_vision.return_value = LLMResponse(
+        mock_vision_client.chat_with_vision.return_value = LLMResponse(
             content=json.dumps({
                 "is_finance": True,
                 "confidence": 0.85,
@@ -119,9 +125,9 @@ class TestBookmarkClassification:
         assert result.category == "finance"
         assert result.has_visual_data
 
-    def test_non_finance_image_with_visual_data(self, classifier, mock_xai_client):
+    def test_non_finance_image_with_visual_data(self, classifier, mock_text_client, mock_vision_client):
         """Non-finance images with charts/graphs should set has_visual_data."""
-        mock_xai_client.chat.return_value = LLMResponse(
+        mock_text_client.chat.return_value = LLMResponse(
             content=json.dumps({
                 "is_finance": False,
                 "confidence": 0.8,
@@ -133,7 +139,7 @@ class TestBookmarkClassification:
                 "summary": "Climate data discussion",
             })
         )
-        mock_xai_client.chat_with_vision.return_value = LLMResponse(
+        mock_vision_client.chat_with_vision.return_value = LLMResponse(
             content=json.dumps({
                 "is_finance": False,
                 "confidence": 0.7,
@@ -152,19 +158,19 @@ class TestBookmarkClassification:
         assert not result.is_finance
         assert result.has_visual_data
 
-    def test_classification_error_on_api_failure(self, classifier, mock_xai_client):
-        mock_xai_client.chat.side_effect = ClientError("API timeout")
+    def test_classification_error_on_api_failure(self, classifier, mock_text_client):
+        mock_text_client.chat.side_effect = ClientError("API timeout")
         with pytest.raises(ClassificationError, match="Text classification failed"):
             classifier.classify("t4", "some text")
 
-    def test_malformed_json_returns_non_finance(self, classifier, mock_xai_client):
-        mock_xai_client.chat.return_value = LLMResponse(content="not json at all")
+    def test_malformed_json_returns_non_finance(self, classifier, mock_text_client):
+        mock_text_client.chat.return_value = LLMResponse(content="not json at all")
         result = classifier.classify("t5", "some text")
         assert not result.is_finance
         assert result.category == "other"  # defaults
 
-    def test_result_stores_metadata(self, classifier, mock_xai_client):
-        mock_xai_client.chat.return_value = LLMResponse(
+    def test_result_stores_metadata(self, classifier, mock_text_client):
+        mock_text_client.chat.return_value = LLMResponse(
             content=json.dumps({
                 "is_finance": True,
                 "confidence": 0.9,
@@ -189,3 +195,21 @@ class TestBookmarkClassification:
     def test_backward_compatible_alias(self):
         """FinanceClassifier should still work as an alias."""
         assert FinanceClassifier is BookmarkClassifier
+
+    def test_text_uses_cerebras_not_xai(self, classifier, mock_text_client, mock_vision_client):
+        """Text classification should use the text_client (Cerebras), not vision_client."""
+        mock_text_client.chat.return_value = LLMResponse(
+            content=json.dumps({
+                "is_finance": True,
+                "confidence": 0.9,
+                "category": "finance",
+                "subcategory": "crypto",
+                "has_trading_pattern": True,
+                "has_visual_data": False,
+                "detected_topic": "crypto",
+                "summary": "BTC setup",
+            })
+        )
+        classifier.classify("t7", "BTC long $42k")
+        mock_text_client.chat.assert_called_once()
+        mock_vision_client.chat_with_vision.assert_not_called()

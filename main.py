@@ -174,6 +174,17 @@ def main() -> int:
     parser.add_argument("--no-vision", action="store_true", help="Skip vision analysis.")
     parser.add_argument("--workers", "-w", type=int, default=MAX_WORKERS, help=f"Max parallel workers (default: {MAX_WORKERS}).")
 
+    # --- Daemon mode ---
+    daemon_group = parser.add_argument_group("Daemon mode")
+    daemon_group.add_argument(
+        "--daemon", action="store_true",
+        help="Run as a polling daemon (fetch new bookmarks on an interval).",
+    )
+    daemon_group.add_argument(
+        "--interval", type=int, default=None,
+        help="Daemon poll interval in seconds (default: 900 = 15 min). Requires --daemon.",
+    )
+
     # --- Cache options ---
     cache_group = parser.add_argument_group("Cache")
     cache_group.add_argument("--no-cache", action="store_true", help="Disable SQLite cache.")
@@ -201,6 +212,25 @@ def main() -> int:
             table.add_row(k, str(v))
         console.print(table)
         return 0
+
+    # -----------------------------------------------------------------------
+    # Mode 0: Daemon mode (inline polling loop for testing)
+    # -----------------------------------------------------------------------
+    if args.daemon:
+        from service import run_daemon, POLL_INTERVAL, POLL_MAX_RESULTS
+
+        interval = args.interval or POLL_INTERVAL
+        max_results = args.max_results if args.max_results != 10 else POLL_MAX_RESULTS
+
+        console.print(
+            f"[step]Starting daemon mode[/step] — "
+            f"poll every {interval}s, max {max_results} bookmarks"
+        )
+        console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+        # run_daemon never returns (calls sys.exit)
+        run_daemon(interval=interval, max_results=max_results)
+        return 0  # unreachable, but keeps the type checker happy
 
     pipeline = MultiLLMPipeline(
         output_dir=args.output_dir,
@@ -358,7 +388,7 @@ def main() -> int:
         tweet_id = _make_tweet_id(tweet_text, author)
         tweet_url = ""
     else:
-        parser.error("Provide either --fetch, --text, or --file.")
+        parser.error("Provide either --fetch, --text, --file, or --daemon.")
         return 1
 
     # Pipeline handles vision internally now
