@@ -271,7 +271,7 @@ src/
 └── pipeline.py                     # Multi-LLM orchestrator
 main.py                             # CLI entrypoint
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
-tests/                              # 134 unit tests
+tests/                              # 141 unit tests
 ```
 
 ## Security
@@ -284,7 +284,7 @@ A pre-commit hook scans all staged files for leaked secrets (API keys, tokens, P
 python3 -m pytest tests/ -v
 ```
 
-134 unit tests covering all modules: clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, and CLI.
+141 unit tests covering all modules: clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, fetcher, and CLI.
 
 ## License
 

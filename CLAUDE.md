@@ -198,4 +198,4 @@ Generated scripts must follow these rules (enforced by the system prompt, self-v
 python3 -m pytest tests/ -v
 ```
 
-134 tests covering clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, and CLI.
+141 tests covering clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, fetcher (long-form/article support), and CLI.
