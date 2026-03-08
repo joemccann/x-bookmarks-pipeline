@@ -1,6 +1,6 @@
-# X Bookmarks → Pine Script v6 Pipeline
+# X Bookmarks Pipeline
 
-A multi-LLM Python pipeline that fetches your X (Twitter) bookmarks, classifies them by category, extracts structured data from chart images, plans trading strategies or indicators for finance bookmarks, and generates executable [TradingView Pine Script v6](https://www.tradingview.com/pine-script-docs/) — all automatically, in parallel, with SQLite caching so nothing is processed twice.
+A multi-LLM Python pipeline that fetches your X (Twitter) bookmarks, classifies every one by category, extracts structured data from chart images, and — for finance bookmarks — generates executable [TradingView Pine Script v6](https://www.tradingview.com/pine-script-docs/) strategies and indicators. All automatic, parallel, with SQLite caching so nothing is processed twice.
 
 **Every bookmark is categorized and saved.** Finance bookmarks additionally get full Pine Script generation.
 
