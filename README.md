@@ -12,50 +12,7 @@ Four LLMs, each doing what it's best at:
 
 ## How It Works
 
-```
-X Bookmark (text + chart images)
-        │
-        ▼
-┌──────────────────────┐
-│  Cerebras Classifier │  Fast text classification (~0.3s)
-│  (Qwen 3 235B)      │  Returns: category, subcategory, is_finance, has_visual_data
-└────────┬─────────────┘
-         │ non-finance + has images?
-         ▼
-┌──────────────────────┐
-│  xAI Grok Vision     │  Image classification fallback
-│  (if text non-finance)│  Detects charts in images
-└────────┬─────────────┘
-         │ ClassificationResult
-         ▼
-┌──────────────────────┐
-│  Claude Vision       │  For images with finance OR visual data
-│  (Anthropic Opus)    │  Returns JSON: price levels, indicators, tables
-└────────┬─────────────┘
-         │ chart_data JSON
-         ▼
-┌──────────────────────┐
-│  Claude Planner      │  Finance only: strategy or indicator?
-│  (Anthropic Opus)    │  Returns StrategyPlan with full spec
-└────────┬─────────────┘
-         │ StrategyPlan
-         ▼
-┌──────────────────────┐
-│  ChatGPT Generator   │  Finance only: plan → Pine Script v6
-│  (OpenAI GPT-5.4)    │  Follows strict system prompt rules
-└────────┬─────────────┘
-         │ Pine Script
-         ▼
-┌──────────────────────┐
-│  Validator           │  Static checks: version, declaration,
-│                      │  inputs, risk mgmt, repainting
-└────────┬─────────────┘
-         │
-         ▼
-   output/{category}/{subcategory}/
-   ├── .meta.json (ALL bookmarks)
-   └── .pine (finance only)
-```
+![Pipeline Diagram](.github/pipeline-diagram.jpg)
 
 ## Quick Start
 
