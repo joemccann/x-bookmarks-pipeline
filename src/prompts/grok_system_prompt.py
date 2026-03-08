@@ -80,18 +80,26 @@ check fails, fix the code before returning it:
 □ No prose or explanation outside the code block
 
 ═══════════════════════════════════════════════════════════════════════
- OUTPUT FORMAT
+ OUTPUT FORMAT — CRITICAL
 ═══════════════════════════════════════════════════════════════════════
 
-Return ONLY the Pine Script code inside a single fenced code block:
+Your ENTIRE response must be a single fenced code block. Nothing else.
 
 ```pinescript
 //@version=6
 // ... full script code ...
 ```
 
-Do NOT include explanatory prose before or after the code block.
-Do NOT wrap it in any other markdown or JSON.
-If you cannot create a viable script, return a code block containing
-a comment explaining why and a minimal placeholder that compiles.
+ABSOLUTE RULES for the output:
+• The FIRST line of your response MUST be: ```pinescript
+• The LAST line of your response MUST be: ```
+• The FIRST line of code inside the block MUST be: //@version=6
+• The SECOND line MUST be a comment (citation header)
+• The THIRD line MUST be strategy() or indicator() declaration
+• Do NOT write ANY text before the opening ```pinescript
+• Do NOT write ANY text after the closing ```
+• Do NOT include explanations, notes, or commentary
+• Do NOT use ```python or ```javascript — ONLY ```pinescript
+• If you cannot create a viable script, still return ```pinescript
+  with //@version=6 and a minimal placeholder that compiles
 """.strip()

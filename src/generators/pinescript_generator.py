@@ -113,16 +113,33 @@ class PineScriptGenerator:
 
     @staticmethod
     def _extract_pinescript(response: str) -> str:
-        """Extract Pine Script code block from the LLM response."""
+        """Extract Pine Script code block from the LLM response.
+
+        Handles: ```pinescript, ```pine, ```typescript, ```javascript,
+        bare ``` fences, and raw //@version responses.
+        """
+        # Try fenced code block with any language tag
         m = re.search(
-            r"```(?:pinescript|pine)?\s*\n(.*?)```",
+            r"```\w*\s*\n(.*?)```",
             response,
             re.DOTALL,
         )
         if m:
-            return m.group(1).strip()
+            code = m.group(1).strip()
+            if "//@version" in code:
+                return code
 
+        # Raw response starting with //@version (no fences)
         if response.strip().startswith("//@version"):
             return response.strip()
+
+        # Last resort: find //@version=6 anywhere and take everything from there
+        idx = response.find("//@version")
+        if idx != -1:
+            # Take from //@version to end, strip trailing ``` if present
+            code = response[idx:].strip()
+            if code.endswith("```"):
+                code = code[:-3].strip()
+            return code
 
         return response.strip()
