@@ -135,6 +135,36 @@ def _make_tweet_id(text: str, author: str = "") -> str:
     return hashlib.sha256(f"{author}:{text}".encode()).hexdigest()[:16]
 
 
+def _filter_bookmarks_by_date(
+    bookmarks: list,
+    start_date: str = "",
+    end_date: str = "",
+) -> list:
+    """Filter bookmarks by date range (YYYY-MM-DD, inclusive).
+
+    - start_date only: exclude bookmarks before that date
+    - end_date only: exclude bookmarks after that date
+    - both: keep only bookmarks within the range
+    - neither: return all bookmarks unchanged
+
+    Bookmarks with no date are excluded when any filter is active.
+    """
+    if not start_date and not end_date:
+        return bookmarks
+
+    filtered = []
+    for bm in bookmarks:
+        d = getattr(bm, "date", "") or ""
+        if not d:
+            continue  # skip dateless bookmarks when filtering
+        if start_date and d < start_date:
+            continue
+        if end_date and d > end_date:
+            continue
+        filtered.append(bm)
+    return filtered
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -154,6 +184,14 @@ def main() -> int:
     fetch_group.add_argument(
         "--max-results", type=int, default=10,
         help="Max bookmarks to fetch (default: 10).",
+    )
+    fetch_group.add_argument(
+        "--start-date",
+        help="Only process bookmarks on or after this date (YYYY-MM-DD).",
+    )
+    fetch_group.add_argument(
+        "--end-date",
+        help="Only process bookmarks on or before this date (YYYY-MM-DD).",
     )
 
     # --- Manual / single-bookmark mode ---
@@ -257,11 +295,30 @@ def main() -> int:
         except Exception as e:
             console.print(f"[error]Failed to fetch bookmarks: {e}[/error]")
             return 1
-        console.print(f"  [success]Fetched {len(bookmarks)} bookmark(s)[/success]\n")
+        console.print(f"  [success]Fetched {len(bookmarks)} bookmark(s)[/success]")
 
         if not bookmarks:
             console.print("[warning]No bookmarks returned.[/warning]")
             return 1
+
+        # Apply date filtering
+        start_date = getattr(args, "start_date", None) or ""
+        end_date = getattr(args, "end_date", None) or ""
+        if start_date or end_date:
+            pre_count = len(bookmarks)
+            bookmarks = _filter_bookmarks_by_date(bookmarks, start_date=start_date, end_date=end_date)
+            range_desc = ""
+            if start_date and end_date:
+                range_desc = f"{start_date} to {end_date}"
+            elif start_date:
+                range_desc = f"from {start_date}"
+            else:
+                range_desc = f"through {end_date}"
+            console.print(f"  [dim]Date filter ({range_desc}): {pre_count} → {len(bookmarks)} bookmarks[/dim]")
+            if not bookmarks:
+                console.print("[warning]No bookmarks match the date filter.[/warning]")
+                return 0
+        console.print()
 
         save = not args.no_save
         batch_t0 = time.time()

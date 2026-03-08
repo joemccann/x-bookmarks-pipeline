@@ -199,6 +199,66 @@ class TestFileMode:
         assert call_kwargs.kwargs["image_urls"] == ["https://example.com/chart.png"]
 
 
+class TestDateFiltering:
+    """--start-date and --end-date filter bookmarks by date."""
+
+    def _make_bookmarks(self):
+        from src.fetchers.x_bookmark_fetcher import XBookmark
+        return [
+            XBookmark(tweet_id="1", text="old", author="a", date="2026-02-01"),
+            XBookmark(tweet_id="2", text="mid", author="b", date="2026-03-01"),
+            XBookmark(tweet_id="3", text="new", author="c", date="2026-03-15"),
+            XBookmark(tweet_id="4", text="newest", author="d", date="2026-04-01"),
+            XBookmark(tweet_id="5", text="no date", author="e", date=""),
+        ]
+
+    def test_end_date_filters_after(self):
+        from main import _filter_bookmarks_by_date
+        bms = self._make_bookmarks()
+        filtered = _filter_bookmarks_by_date(bms, end_date="2026-03-15")
+        dates = [b.date for b in filtered]
+        assert "2026-02-01" in dates
+        assert "2026-03-01" in dates
+        assert "2026-03-15" in dates  # inclusive
+        assert "2026-04-01" not in dates
+
+    def test_start_date_filters_before(self):
+        from main import _filter_bookmarks_by_date
+        bms = self._make_bookmarks()
+        filtered = _filter_bookmarks_by_date(bms, start_date="2026-03-01")
+        dates = [b.date for b in filtered]
+        assert "2026-02-01" not in dates
+        assert "2026-03-01" in dates  # inclusive
+        assert "2026-03-15" in dates
+        assert "2026-04-01" in dates
+
+    def test_date_range(self):
+        from main import _filter_bookmarks_by_date
+        bms = self._make_bookmarks()
+        filtered = _filter_bookmarks_by_date(bms, start_date="2026-03-01", end_date="2026-03-15")
+        dates = [b.date for b in filtered]
+        assert dates == ["2026-03-01", "2026-03-15"]
+
+    def test_no_dates_returns_all(self):
+        from main import _filter_bookmarks_by_date
+        bms = self._make_bookmarks()
+        filtered = _filter_bookmarks_by_date(bms)
+        assert len(filtered) == 5
+
+    def test_bookmarks_without_date_excluded_when_filtering(self):
+        from main import _filter_bookmarks_by_date
+        bms = self._make_bookmarks()
+        filtered = _filter_bookmarks_by_date(bms, start_date="2026-03-01")
+        # Bookmark with empty date should be excluded when date filter is active
+        assert all(b.date != "" for b in filtered)
+
+    def test_bookmarks_without_date_included_when_no_filter(self):
+        from main import _filter_bookmarks_by_date
+        bms = self._make_bookmarks()
+        filtered = _filter_bookmarks_by_date(bms)
+        assert any(b.date == "" for b in filtered)
+
+
 class TestPrintResult:
     """Test _print_result rendering paths don't crash."""
 
