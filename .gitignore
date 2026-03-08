@@ -141,6 +141,9 @@ vite.config.ts.timestamp-*
 # Pipeline output
 output/
 
+# Generated reports
+report.html
+
 # SQLite cache (top-level only, not src/cache/)
 /cache/
 

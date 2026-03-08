@@ -37,60 +37,94 @@ X Bookmark (text + chart image)
 pip install -r requirements.txt
 ```
 
-### 2. Set your xAI API key
+### 2. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env and add your key from https://console.x.ai/
-export XAI_API_KEY=xai-your-key-here
+# Fill in XAI_API_KEY (always required)
+# Fill in X_USER_ACCESS_TOKEN + X_USER_ID for --fetch mode
 ```
 
+**Required env vars:**
+
+| Variable | When needed | Where to get it |
+|---|---|---|
+| `XAI_API_KEY` | Always | [console.x.ai](https://console.x.ai/) |
+| `X_USER_ACCESS_TOKEN` | `--fetch` | [console.x.com](https://console.x.com/) — OAuth 2.0 with `bookmark.read tweet.read users.read` |
+| `X_USER_ID` | `--fetch` | `curl -H "Authorization: Bearer $X_USER_ACCESS_TOKEN" https://api.twitter.com/2/users/me` |
+
 ### 3. Run
+
+**Fetch live bookmarks from X (processes all in batch, runs Grok vision on chart images):**
+
+```bash
+python3 main.py --fetch
+python3 main.py --fetch --max-results 25
+python3 main.py --fetch --x-username YourHandle   # resolves ID automatically
+```
 
 **From inline text:**
 
 ```bash
-python main.py \
+python3 main.py \
   --text "BTC breakout above \$42k, RSI oversold on 4h. Target \$45k, SL \$40k" \
   --author "CryptoTrader99" \
   --date "2026-03-01"
 ```
 
-**From a JSON bookmark file:**
+**With a chart image URL (analyzed automatically by Grok vision):**
 
 ```bash
-python main.py --file example_bookmark.json
-```
-
-**With Grok vision chart description:**
-
-```bash
-python main.py \
+python3 main.py \
   --text "Long ETH here" \
-  --chart "4h chart showing ascending triangle with support at 3200 and resistance at 3500" \
+  --chart-url "https://pbs.twimg.com/media/example.jpg" \
   --author "DeFiWhale" \
   --date "2026-03-05"
 ```
 
+**From a JSON bookmark file:**
+
+```bash
+python3 main.py --file bookmark.json
+```
+
 ### CLI Options
+
+**Live fetch:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--fetch` | — | Fetch bookmarks live from X API |
+| `--x-username` | — | Resolve user ID from handle (overrides `X_USER_ID`) |
+| `--max-results` | `10` | Max bookmarks to fetch |
+
+**Manual input:**
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--text` | `-t` | Tweet text content |
-| `--chart` | `-c` | Chart image description (from Grok vision) |
+| `--chart` | `-c` | Plain-text chart description |
+| `--chart-url` | — | Chart image URL — analyzed by Grok vision automatically |
 | `--author` | `-a` | Tweet author handle |
 | `--date` | `-d` | Tweet date (YYYY-MM-DD) |
 | `--file` | `-f` | Path to JSON bookmark file |
-| `--model` | `-m` | xAI model (default: `grok-4.1`) |
-| `--output-dir` | `-o` | Output directory (default: `output/`) |
-| `--no-save` | | Print to stdout only |
+
+**Pipeline:**
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--model` | `-m` | `grok-4.1` | xAI model for Pine Script generation |
+| `--output-dir` | `-o` | `output/` | Directory for output files |
+| `--no-save` | — | — | Print to stdout only |
+| `--no-vision` | — | — | Skip Grok vision even when image URLs present |
 
 ## Bookmark JSON Format
 
 ```json
 {
   "text": "BTC looking ready for a breakout above $42,000. RSI oversold on the 4h chart...",
-  "chart_description": "4-hour BTCUSDT chart showing ascending triangle pattern...",
+  "chart_description": "Optional plain-text description (skips vision)",
+  "chart_url": "https://pbs.twimg.com/media/example.jpg",
   "author": "CryptoTrader99",
   "date": "2026-03-01"
 }
@@ -122,17 +156,20 @@ Every generated strategy is validated against these rules:
 
 ```
 src/
-├── prompts/
-│   └── grok_system_prompt.py      # System prompt for Grok
+├── fetchers/
+│   └── x_bookmark_fetcher.py      # X API v2 bookmark fetcher (live data)
+├── generators/
+│   ├── pinescript_generator.py    # TradingSignal → Pine Script (via Grok)
+│   └── vision_analyzer.py         # Chart image URL → description (Grok vision)
 ├── parsers/
 │   └── bookmark_parser.py         # Tweet → TradingSignal
-├── generators/
-│   └── pinescript_generator.py    # TradingSignal → Pine Script (via Grok)
+├── prompts/
+│   └── grok_system_prompt.py      # System prompt for Pine Script generation
 ├── validators/
 │   └── pinescript_validator.py    # Static v6 validation
 └── pipeline.py                    # End-to-end orchestrator
 main.py                            # CLI entrypoint
-example_bookmark.json              # Sample input
+.env.example                       # Environment variable template
 ```
 
 ## Programmatic Usage

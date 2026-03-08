@@ -209,12 +209,15 @@ class BookmarkParser:
                 levels[label] = _parse_price(m.group(1))
 
         # Grab any remaining unlabelled prices as "level_N"
+        # Skip values already captured under a named label to avoid duplicates.
+        already_captured = set(levels.values())
         all_prices = re.finditer(_price_tok, combined, re.IGNORECASE)
         idx = 0
         for m in all_prices:
             val = _parse_price(m.group(0))
-            key = f"level_{idx}"
-            levels.setdefault(key, val)
-            idx += 1
+            if val not in already_captured:
+                levels[f"level_{idx}"] = val
+                already_captured.add(val)
+                idx += 1
 
         return levels
