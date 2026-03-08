@@ -12,7 +12,7 @@ Four LLMs, each doing what it's best at:
 
 ## How It Works
 
-![Pipeline Diagram](.github/pipeline-diagram.jpg)
+![Pipeline Diagram](.github/pipeline-diagram.png)
 
 ## Quick Start
 
