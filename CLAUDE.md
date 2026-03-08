@@ -193,6 +193,7 @@ Generated scripts must follow these rules (enforced by the system prompt, self-v
 7. Citation header crediting the original tweet author.
 8. No repainting — `barstate.isconfirmed` for entries, explicit `lookahead` on `request.security()`.
 9. ChatGPT runs a 10-point self-validation checklist before returning code.
+10. Output must be a single ` ```pinescript ` fenced block — no prose before/after. Extraction is hardened to recover code from any fence format or raw responses.
 
 ## Security
 
