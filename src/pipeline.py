@@ -98,18 +98,24 @@ class MultiLLMPipeline:
 
         # 0. Check cache for completed result
         if self.cache and self.cache.has_completed(tweet_id):
-            return self._load_from_cache(tweet_id)
+            cached_result = self._load_from_cache(tweet_id)
+            cat = ""
+            if cached_result.classification:
+                c = cached_result.classification
+                cat = f" [bold]{c.category}/{c.subcategory}[/bold]"
+            console.print(f"    [cached]CACHE HIT[/cached]{cat} — skipping")
+            return cached_result
 
         # Determine step labels based on whether this is finance (decided after classify)
         # We use dynamic step numbering after classification
 
-        # 1. Classify (xAI Grok) — always runs
+        # 1. Classify (Cerebras text + xAI vision) — always runs
         classification = None
         if self.cache and self.cache.has_classification(tweet_id):
             console.print("    [dim]classify — cached[/dim]")
             classification = self.cache.get_classification(tweet_id)
         else:
-            console.print("    [bold cyan]1[/bold cyan] [dim]Classifying via xAI Grok...[/dim]")
+            console.print("    [bold cyan]1[/bold cyan] [dim]Classifying via Cerebras...[/dim]")
             t0 = time.time()
             try:
                 classification = self.classifier.classify(
