@@ -96,6 +96,10 @@ class MultiLLMPipeline:
         from src.console import console
         pipeline_t0 = time.time()
 
+        # Build a per-tweet log tag: @author/tweet_id
+        safe_author = author or "unknown"
+        tag = f"[dim]@{safe_author}/{tweet_id}[/dim]"
+
         # 0. Check cache for completed result
         if self.cache and self.cache.has_completed(tweet_id):
             cached_result = self._load_from_cache(tweet_id)
@@ -103,19 +107,16 @@ class MultiLLMPipeline:
             if cached_result.classification:
                 c = cached_result.classification
                 cat = f" [bold]{c.category}/{c.subcategory}[/bold]"
-            console.print(f"    [cached]CACHE HIT[/cached]{cat} — skipping")
+            console.print(f"    {tag} [cached]CACHE HIT[/cached]{cat} — skipping")
             return cached_result
-
-        # Determine step labels based on whether this is finance (decided after classify)
-        # We use dynamic step numbering after classification
 
         # 1. Classify (Cerebras text + xAI vision) — always runs
         classification = None
         if self.cache and self.cache.has_classification(tweet_id):
-            console.print("    [dim]classify — cached[/dim]")
+            console.print(f"    {tag} [dim]classify — cache hit[/dim]")
             classification = self.cache.get_classification(tweet_id)
         else:
-            console.print("    [bold cyan]1[/bold cyan] [dim]Classifying via Cerebras...[/dim]")
+            console.print(f"    {tag} [bold cyan]1[/bold cyan] [dim]Classifying via Cerebras...[/dim]")
             t0 = time.time()
             try:
                 classification = self.classifier.classify(
@@ -124,7 +125,7 @@ class MultiLLMPipeline:
                     image_urls=image_urls,
                 )
             except ClassificationError as e:
-                console.print(f"    [bold red]classify FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
+                console.print(f"    {tag} [bold red]classify FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
                 result.error = f"Classification failed: {e}"
                 result.validation = ValidationResult()
                 result.validation.fail(result.error)
@@ -134,7 +135,7 @@ class MultiLLMPipeline:
             cat_badge = f"[bold]{classification.category}/{classification.subcategory}[/bold]"
             fin = "[green]FINANCE[/green]" if classification.is_finance else "[dim]non-finance[/dim]"
             console.print(
-                f"    [bold cyan]1[/bold cyan] {cat_badge} {fin} "
+                f"    {tag} [bold cyan]1[/bold cyan] {cat_badge} {fin} "
                 f"[dim]{classification.confidence:.0%} ({elapsed:.1f}s)[/dim]"
             )
 
@@ -154,20 +155,20 @@ class MultiLLMPipeline:
 
         if needs_vision:
             if self.cache and self.cache.has_chart_data(tweet_id):
-                console.print("    [dim]vision — cached[/dim]")
+                console.print(f"    {tag} [dim]vision — cache hit[/dim]")
                 chart_data = self.cache.get_chart_data(tweet_id)
             else:
-                console.print("    [bold cyan]2[/bold cyan] [dim]Vision analysis via Claude...[/dim]")
+                console.print(f"    {tag} [bold cyan]2[/bold cyan] [dim]Vision analysis via Claude...[/dim]")
                 t0 = time.time()
                 chart_description = self._run_vision(image_urls)
                 elapsed = time.time() - t0
                 if chart_description:
                     chart_data = _parse_chart_json(chart_description)
-                    console.print(f"    [bold cyan]2[/bold cyan] [dim]vision done ({elapsed:.1f}s)[/dim]")
+                    console.print(f"    {tag} [bold cyan]2[/bold cyan] [dim]vision done ({elapsed:.1f}s)[/dim]")
                     if self.cache and chart_data:
                         self.cache.save_chart_data(tweet_id, chart_data)
                 else:
-                    console.print(f"    [bold cyan]2[/bold cyan] [dim]vision returned empty ({elapsed:.1f}s)[/dim]")
+                    console.print(f"    {tag} [bold cyan]2[/bold cyan] [dim]vision returned empty ({elapsed:.1f}s)[/dim]")
         elif chart_description:
             chart_data = _parse_chart_json(chart_description)
 
@@ -178,10 +179,10 @@ class MultiLLMPipeline:
             # 3. Plan (Claude Opus)
             plan = None
             if self.cache and self.cache.has_plan(tweet_id):
-                console.print("    [dim]plan — cached[/dim]")
+                console.print(f"    {tag} [dim]plan — cache hit[/dim]")
                 plan = self.cache.get_plan(tweet_id)
             else:
-                console.print("    [bold cyan]3[/bold cyan] [dim]Planning via Claude Opus...[/dim]")
+                console.print(f"    {tag} [bold cyan]3[/bold cyan] [dim]Planning via Claude Opus...[/dim]")
                 t0 = time.time()
                 try:
                     plan = self.planner.plan(
@@ -191,7 +192,7 @@ class MultiLLMPipeline:
                         chart_description=chart_description,
                     )
                 except PlanningError as e:
-                    console.print(f"    [bold red]plan FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
+                    console.print(f"    {tag} [bold red]plan FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
                     result.error = f"Planning failed: {e}"
                     result.validation = ValidationResult()
                     result.validation.fail(result.error)
@@ -206,7 +207,7 @@ class MultiLLMPipeline:
 
                 elapsed = time.time() - t0
                 console.print(
-                    f"    [bold cyan]3[/bold cyan] [bold]{plan.script_type}[/bold] "
+                    f"    {tag} [bold cyan]3[/bold cyan] [bold]{plan.script_type}[/bold] "
                     f"[dim]{plan.title} ({elapsed:.1f}s)[/dim]"
                 )
 
@@ -216,12 +217,12 @@ class MultiLLMPipeline:
             result.plan = plan
 
             # 4. Generate (ChatGPT)
-            console.print("    [bold cyan]4[/bold cyan] [dim]Generating Pine Script via ChatGPT...[/dim]")
+            console.print(f"    {tag} [bold cyan]4[/bold cyan] [dim]Generating Pine Script via ChatGPT...[/dim]")
             t0 = time.time()
             try:
                 pine_code = self.generator.generate(plan)
             except GenerationError as e:
-                console.print(f"    [bold red]generate FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
+                console.print(f"    {tag} [bold red]generate FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
                 result.error = f"Generation failed: {e}"
                 result.validation = ValidationResult()
                 result.validation.fail(result.error)
@@ -236,16 +237,16 @@ class MultiLLMPipeline:
 
             elapsed = time.time() - t0
             lines = pine_code.count("\n") + 1
-            console.print(f"    [bold cyan]4[/bold cyan] [dim]{lines} lines generated ({elapsed:.1f}s)[/dim]")
+            console.print(f"    {tag} [bold cyan]4[/bold cyan] [dim]{lines} lines generated ({elapsed:.1f}s)[/dim]")
             result.pine_script = pine_code
 
             # Validate
             validation = self.validator.validate(pine_code, script_type=plan.script_type)
             result.validation = validation
             if validation.valid:
-                console.print(f"    [bold green]VALID[/bold green]")
+                console.print(f"    {tag} [bold green]VALID[/bold green]")
             else:
-                console.print(f"    [bold red]INVALID[/bold red]")
+                console.print(f"    {tag} [bold red]INVALID[/bold red]")
 
             # Cache script
             if self.cache:
@@ -257,7 +258,7 @@ class MultiLLMPipeline:
                 )
 
         total = time.time() - pipeline_t0
-        console.print(f"    [dim]pipeline total: {total:.1f}s[/dim]")
+        console.print(f"    {tag} [dim]pipeline total: {total:.1f}s[/dim]")
 
         # 5. Save — ALL bookmarks get .meta.json; finance also gets .pine
         if save:
