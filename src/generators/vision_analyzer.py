@@ -18,21 +18,65 @@ from src.clients.anthropic_client import AnthropicClient
 from src.clients.base_client import ClientError
 
 _CHART_ANALYSIS_PROMPT = """
-You are an expert technical analyst. Analyze this trading chart image and provide
-a detailed, structured description including:
+You are an expert technical analyst and data extraction specialist.
 
-1. Asset / ticker if visible
-2. Timeframe (e.g. 4h, Daily, Weekly)
-3. Chart type (candlestick, line, bar)
-4. Key price levels visible (support, resistance, breakout zones) — include exact numbers
-5. Any chart patterns (head & shoulders, triangles, flags, wedges, channels, etc.)
-6. Any indicators visible (RSI, MACD, EMAs, Bollinger Bands, Volume, etc.) and their current values/signals
-7. Overall trend direction (uptrend, downtrend, ranging)
-8. Any trendlines, channels, or Fibonacci levels drawn on the chart
-9. Notable candle formations at key levels
+Analyze this image. It may be a trading chart, a data table, a graph, a
+screenshot with statistics, or another visual format.
 
-Be precise with price levels — extract every number you can see on the price axis.
-Format: plain prose, no markdown, no bullet points. Be concise but thorough.
+Respond with ONLY valid JSON (no markdown fences, no explanation outside the JSON):
+
+{
+  "image_type": "chart" | "table" | "graph" | "screenshot" | "other",
+  "description": "Concise plain-text description of what the image shows",
+  "asset": {
+    "ticker": "detected ticker or empty string",
+    "name": "full asset name if visible"
+  },
+  "chart_analysis": {
+    "timeframe": "e.g. 4h, Daily, Weekly or empty string",
+    "chart_type": "candlestick, line, bar, area, or empty string",
+    "trend_direction": "uptrend, downtrend, ranging, or empty string",
+    "patterns": ["list of chart patterns detected"],
+    "candle_formations": ["notable candle formations at key levels"]
+  },
+  "price_levels": {
+    "current": null,
+    "support": [],
+    "resistance": [],
+    "breakout_zones": [],
+    "all_visible": ["every price number visible on the axis"]
+  },
+  "indicators": [
+    {
+      "name": "indicator name",
+      "value": "current reading if visible",
+      "signal": "bullish, bearish, neutral, or n/a"
+    }
+  ],
+  "drawn_elements": {
+    "trendlines": ["description of each trendline"],
+    "channels": ["description of channels"],
+    "fibonacci_levels": ["fib levels if drawn"],
+    "annotations": ["any text annotations on the image"]
+  },
+  "tabular_data": {
+    "headers": ["column headers if table/grid is present"],
+    "rows": [["row1col1", "row1col2"], ["row2col1", "row2col2"]],
+    "summary": "what the table data represents"
+  },
+  "statistics": {
+    "key_values": {"label": "value"},
+    "summary": "what the statistics represent"
+  }
+}
+
+Rules:
+- Extract EVERY number visible in the image — prices, percentages, dates, counts
+- For charts: be precise with price levels from the Y-axis
+- For tables/grids: extract ALL rows and columns into tabular_data
+- For statistics/dashboards: extract all key-value pairs into statistics
+- Omit empty sections (empty arrays [] and empty objects {} are fine)
+- If a section doesn't apply, use empty defaults ([], {}, null, "")
 """.strip()
 
 
@@ -115,7 +159,7 @@ class ClaudeVisionAnalyzer:
             response = self.client.chat(
                 messages=messages,
                 temperature=0.1,
-                max_tokens=1024,
+                max_tokens=4096,
             )
             elapsed = time.time() - t1
             desc = response.content.strip()

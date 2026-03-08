@@ -74,6 +74,7 @@ class MultiLLMPipeline:
         author: str = "",
         tweet_date: str = "",
         chart_description: str = "",
+        tweet_url: str = "",
         save: bool = True,
     ) -> PipelineResult:
         """Run the full pipeline for a single bookmark."""
@@ -201,7 +202,13 @@ class MultiLLMPipeline:
 
         # 6. Save
         if save:
-            result.output_path = self._save(plan, pine_code, validation)
+            _tweet_url = tweet_url or f"https://x.com/{author}/status/{tweet_id}" if author else ""
+            result.output_path = self._save(
+                plan, pine_code, validation,
+                tweet_url=_tweet_url,
+                chart_description=chart_description,
+                image_urls=image_urls,
+            )
 
         return result
 
@@ -257,6 +264,9 @@ class MultiLLMPipeline:
         plan: StrategyPlan,
         pine_code: str,
         validation: ValidationResult,
+        tweet_url: str = "",
+        chart_description: str = "",
+        image_urls: list[str] | None = None,
     ) -> str:
         safe_author = (plan.author or "unknown").replace(" ", "_")
         safe_ticker = plan.ticker.replace("/", "-")
@@ -266,9 +276,15 @@ class MultiLLMPipeline:
         with open(filepath, "w") as f:
             f.write(pine_code)
 
+        # Parse chart_description as JSON (vision returns structured data)
+        chart_data = None
+        if chart_description:
+            chart_data = _parse_chart_json(chart_description)
+
         meta_path = filepath.with_suffix(".meta.json")
         meta = {
             "tweet_id": plan.tweet_id,
+            "tweet_url": tweet_url,
             "script_type": plan.script_type,
             "author": plan.author,
             "date": plan.tweet_date,
@@ -279,6 +295,8 @@ class MultiLLMPipeline:
             "pattern": plan.pattern,
             "key_levels": plan.key_levels,
             "rationale": plan.rationale,
+            "image_urls": image_urls or [],
+            "chart_data": chart_data,
             "validation_passed": validation.valid,
             "validation_errors": validation.errors,
             "validation_warnings": validation.warnings,
@@ -287,6 +305,20 @@ class MultiLLMPipeline:
             json.dump(meta, f, indent=2)
 
         return str(filepath)
+
+
+def _parse_chart_json(text: str) -> dict | None:
+    """Parse JSON from vision response, stripping markdown fences if present."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        # Drop first line (```json) and last line (```)
+        lines = [l for l in lines[1:] if l.strip() != "```"]
+        cleaned = "\n".join(lines)
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 # ---------------------------------------------------------------------------

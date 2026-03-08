@@ -31,6 +31,8 @@ import argparse
 import hashlib
 import json
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from src.pipeline import MultiLLMPipeline, PipelineResult
@@ -200,20 +202,36 @@ def main() -> int:
             print("No bookmarks returned.")
             return 1
 
-        vision = None if args.no_vision else ClaudeVisionAnalyzer()
-        exit_code = 0
+        use_vision = not args.no_vision
+        save = not args.no_save
+        batch_t0 = time.time()
 
-        for i, bm in enumerate(bookmarks, start=1):
-            print(f"\n[{i}/{len(bookmarks)}] @{bm.author or 'unknown'} - {bm.date or 'undated'}")
+        def _process_bookmark(i: int, bm) -> tuple[int, PipelineResult]:
+            """Process a single bookmark (vision + full pipeline). Thread-safe."""
+            tag = f"[{i}/{len(bookmarks)}]"
+            tweet_id = getattr(bm, "tweet_id", None) or _make_tweet_id(bm.text, bm.author)
+            tweet_url = f"https://x.com/{bm.author}/status/{tweet_id}" if bm.author else ""
+
+            print(f"\n{tag} @{bm.author or 'unknown'} - {bm.date or 'undated'}")
             print(f"  {bm.text[:120]}{'...' if len(bm.text) > 120 else ''}")
 
+            # Skip if fully cached
+            if pipeline.cache and pipeline.cache.has_script(tweet_id):
+                print(f"  {tag} [cache] Already processed — skipping")
+                return i, pipeline.run(
+                    tweet_id=tweet_id, tweet_text=bm.text,
+                    author=bm.author, tweet_date=bm.date,
+                    tweet_url=tweet_url, save=save,
+                )
+
+            # Vision analysis
             chart_description = ""
-            if vision and bm.media_urls:
-                print(f"  Analyzing {len(bm.media_urls)} chart image(s) with Claude vision...")
+            if use_vision and bm.media_urls:
+                print(f"  {tag} Analyzing {len(bm.media_urls)} image(s) with Claude vision...")
+                vision = ClaudeVisionAnalyzer()
                 chart_description = vision.analyze_all(bm.media_urls)
 
-            tweet_id = getattr(bm, "tweet_id", None) or _make_tweet_id(bm.text, bm.author)
-
+            # Full pipeline
             result = pipeline.run(
                 tweet_id=tweet_id,
                 tweet_text=bm.text,
@@ -221,12 +239,37 @@ def main() -> int:
                 chart_description=chart_description,
                 author=bm.author,
                 tweet_date=bm.date,
-                save=not args.no_save,
+                tweet_url=tweet_url,
+                save=save,
             )
+            return i, result
+
+        # Process all bookmarks in parallel
+        max_workers = min(len(bookmarks), 5)
+        results: list[tuple[int, PipelineResult]] = []
+
+        if len(bookmarks) == 1:
+            results.append(_process_bookmark(1, bookmarks[0]))
+        else:
+            print(f"\nProcessing {len(bookmarks)} bookmarks in parallel ({max_workers} workers)...")
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(_process_bookmark, i, bm): i
+                    for i, bm in enumerate(bookmarks, start=1)
+                }
+                for future in as_completed(futures):
+                    results.append(future.result())
+
+        # Print results in original order
+        results.sort(key=lambda x: x[0])
+        exit_code = 0
+        for i, result in results:
             _print_result(result, index=i)
             if result.validation and not result.validation.valid:
                 exit_code = 1
 
+        elapsed = time.time() - batch_t0
+        print(f"\nBatch complete: {len(bookmarks)} bookmarks in {elapsed:.1f}s")
         return exit_code
 
     # -----------------------------------------------------------------------
@@ -241,6 +284,7 @@ def main() -> int:
         tweet_date = bookmark.get("date", "")
         image_urls = bookmark.get("image_urls", [])
         tweet_id = bookmark.get("tweet_id", _make_tweet_id(tweet_text, author))
+        tweet_url = bookmark.get("tweet_url", f"https://x.com/{author}/status/{tweet_id}" if author else "")
     elif args.text:
         tweet_text = args.text
         chart_description = args.chart
@@ -249,6 +293,7 @@ def main() -> int:
         tweet_date = args.date
         image_urls = [chart_url] if chart_url else []
         tweet_id = _make_tweet_id(tweet_text, author)
+        tweet_url = ""
     else:
         parser.error("Provide either --fetch, --text, or --file.")
         return 1
@@ -266,6 +311,7 @@ def main() -> int:
         chart_description=chart_description,
         author=author,
         tweet_date=tweet_date,
+        tweet_url=tweet_url,
         save=not args.no_save,
     )
     _print_result(result)
