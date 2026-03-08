@@ -81,20 +81,20 @@ class MultiLLMPipeline:
         image_urls = image_urls or []
         result = PipelineResult(tweet_id=tweet_id)
 
+        from src.console import console
         pipeline_t0 = time.time()
 
         # 0. Check cache for complete result
         if self.cache and self.cache.has_script(tweet_id):
-            print(f"  [pipeline] Cache hit for {tweet_id} — skipping all API calls")
             return self._load_from_cache(tweet_id)
 
         # 1. Classify (xAI Grok)
         classification = None
         if self.cache and self.cache.has_classification(tweet_id):
-            print(f"  [pipeline] Classification cached — skipping xAI call")
+            console.print("    [dim]1/4 classify — cached[/dim]")
             classification = self.cache.get_classification(tweet_id)
         else:
-            print(f"  [pipeline] Step 1/4: Classifying tweet via xAI Grok...")
+            console.print("    [bold cyan]1/4[/bold cyan] [dim]Classifying via xAI Grok...[/dim]")
             t0 = time.time()
             try:
                 classification = self.classifier.classify(
@@ -103,17 +103,18 @@ class MultiLLMPipeline:
                     image_urls=image_urls,
                 )
             except ClassificationError as e:
-                print(f"  [pipeline] Classification FAILED ({time.time() - t0:.1f}s): {e}")
+                console.print(f"    [bold red]1/4 FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
                 result.error = f"Classification failed: {e}"
                 result.validation = ValidationResult()
                 result.validation.fail(result.error)
                 return result
 
             elapsed = time.time() - t0
-            print(f"  [pipeline] Classification done ({elapsed:.1f}s): "
-                  f"{'FINANCE' if classification.is_finance else 'NOT FINANCE'} "
-                  f"({classification.confidence:.0%} confidence, "
-                  f"topic={classification.detected_topic})")
+            fin = "[green]FINANCE[/green]" if classification.is_finance else "[dim]NOT FINANCE[/dim]"
+            console.print(
+                f"    [bold cyan]1/4[/bold cyan] {fin} "
+                f"[dim]{classification.confidence:.0%} {classification.detected_topic} ({elapsed:.1f}s)[/dim]"
+            )
 
             if self.cache:
                 self.cache.save_classification(classification)
@@ -125,16 +126,15 @@ class MultiLLMPipeline:
             result.skipped = True
             result.skip_reason = f"Not finance-related: {classification.summary}"
             result.validation = ValidationResult()
-            print(f"  [pipeline] Skipping: {result.skip_reason}")
             return result
 
         # 2. Plan (Claude Opus)
         plan = None
         if self.cache and self.cache.has_plan(tweet_id):
-            print(f"  [pipeline] Plan cached — skipping Claude call")
+            console.print("    [dim]2/4 plan — cached[/dim]")
             plan = self.cache.get_plan(tweet_id)
         else:
-            print(f"  [pipeline] Step 2/4: Creating strategy plan via Claude Opus...")
+            console.print("    [bold cyan]2/4[/bold cyan] [dim]Planning via Claude Opus...[/dim]")
             t0 = time.time()
             try:
                 plan = self.planner.plan(
@@ -144,16 +144,17 @@ class MultiLLMPipeline:
                     chart_description=chart_description,
                 )
             except PlanningError as e:
-                print(f"  [pipeline] Planning FAILED ({time.time() - t0:.1f}s): {e}")
+                console.print(f"    [bold red]2/4 FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
                 result.error = f"Planning failed: {e}"
                 result.validation = ValidationResult()
                 result.validation.fail(result.error)
                 return result
 
             elapsed = time.time() - t0
-            print(f"  [pipeline] Plan done ({elapsed:.1f}s): "
-                  f"{plan.script_type} — {plan.title} "
-                  f"({plan.ticker}, {plan.direction}, {plan.timeframe})")
+            console.print(
+                f"    [bold cyan]2/4[/bold cyan] [bold]{plan.script_type}[/bold] "
+                f"[dim]{plan.title} ({elapsed:.1f}s)[/dim]"
+            )
 
             if self.cache:
                 self.cache.save_plan(plan)
@@ -161,12 +162,12 @@ class MultiLLMPipeline:
         result.plan = plan
 
         # 3. Generate (ChatGPT)
-        print(f"  [pipeline] Step 3/4: Generating Pine Script via ChatGPT...")
+        console.print("    [bold cyan]3/4[/bold cyan] [dim]Generating Pine Script via ChatGPT...[/dim]")
         t0 = time.time()
         try:
             pine_code = self.generator.generate(plan)
         except GenerationError as e:
-            print(f"  [pipeline] Generation FAILED ({time.time() - t0:.1f}s): {e}")
+            console.print(f"    [bold red]3/4 FAILED[/bold red] [dim]{time.time() - t0:.1f}s[/dim]: {e}")
             result.error = f"Generation failed: {e}"
             result.validation = ValidationResult()
             result.validation.fail(result.error)
@@ -174,19 +175,16 @@ class MultiLLMPipeline:
 
         elapsed = time.time() - t0
         lines = pine_code.count("\n") + 1
-        print(f"  [pipeline] Generation done ({elapsed:.1f}s): {lines} lines of Pine Script")
+        console.print(f"    [bold cyan]3/4[/bold cyan] [dim]{lines} lines generated ({elapsed:.1f}s)[/dim]")
         result.pine_script = pine_code
 
         # 4. Validate
-        print(f"  [pipeline] Step 4/4: Validating Pine Script...")
         validation = self.validator.validate(pine_code, script_type=plan.script_type)
         result.validation = validation
         if validation.valid:
-            print(f"  [pipeline] Validation PASSED")
+            console.print(f"    [bold cyan]4/4[/bold cyan] [bold green]VALID[/bold green]")
         else:
-            print(f"  [pipeline] Validation FAILED: {validation.errors}")
-        if validation.warnings:
-            print(f"  [pipeline] Warnings: {validation.warnings}")
+            console.print(f"    [bold cyan]4/4[/bold cyan] [bold red]INVALID[/bold red]")
 
         # 5. Cache
         if self.cache:
@@ -198,7 +196,7 @@ class MultiLLMPipeline:
             )
 
         total = time.time() - pipeline_t0
-        print(f"  [pipeline] Total pipeline time: {total:.1f}s")
+        console.print(f"    [dim]pipeline total: {total:.1f}s[/dim]")
 
         # 6. Save
         if save:

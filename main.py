@@ -1,26 +1,9 @@
 #!/usr/bin/env python3
 """
-CLI entrypoint for the X Bookmarks → Pine Script v6 multi-LLM pipeline.
+CLI entrypoint for the X Bookmarks -> Pine Script v6 multi-LLM pipeline.
 
 Pipeline flow:
-  Bookmark → [xAI] Classify → [Claude] Plan → [ChatGPT] Generate → Validate → Cache
-
-Usage examples:
-
-  # Fetch live bookmarks from X
-  python main.py --fetch
-  python main.py --fetch --max-results 20
-
-  # From inline text
-  python main.py --text "BTC breakout above $42k, RSI oversold on 4h. Target $45k, SL $40k" \
-                 --author "CryptoTrader99" --date "2026-03-01"
-
-  # From a JSON bookmark file
-  python main.py --file bookmark.json
-
-  # Cache management
-  python main.py --cache-stats
-  python main.py --clear-cache
+  Bookmark -> [xAI] Classify -> [Claude] Plan -> [ChatGPT] Generate -> Validate -> Cache
 """
 from __future__ import annotations
 
@@ -35,6 +18,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.rule import Rule
+
+from src.console import console
 from src.pipeline import MultiLLMPipeline, PipelineResult
 from src.cache.bookmark_cache import BookmarkCache
 
@@ -44,63 +33,98 @@ from src.cache.bookmark_cache import BookmarkCache
 # ---------------------------------------------------------------------------
 
 def _print_result(result: PipelineResult, index: int | None = None) -> None:
-    """Pretty-print a single PipelineResult."""
-    prefix = f"[{index}] " if index is not None else ""
-    print(f"\n{'=' * 60}")
+    """Pretty-print a single PipelineResult using Rich."""
+    tag = f"[{index}]" if index is not None else ""
 
-    if result.skipped:
-        print(f"{prefix}SKIPPED: {result.skip_reason}")
-        print("=" * 60)
-        return
-
+    # --- CACHED HIT ---
     if result.cached:
-        print(f"{prefix}(cached)")
-
-    if result.error:
-        print(f"{prefix}ERROR: {result.error}")
-        print("=" * 60)
+        console.print(
+            f"  {tag} [cached]CACHE HIT[/cached] — already processed, skipping",
+            style="cached",
+        )
         return
 
+    # --- SKIPPED (non-finance) ---
+    if result.skipped:
+        console.print(
+            f"  {tag} [skip]SKIP[/skip] {result.skip_reason}",
+            style="skip",
+        )
+        return
+
+    # --- ERROR ---
+    if result.error:
+        console.print(f"  {tag} [error]ERROR[/error] {result.error}")
+        return
+
+    # --- Classification ---
     if result.classification:
         c = result.classification
-        print(f"{prefix}Classification: {'finance' if c.is_finance else 'non-finance'} "
-              f"({c.confidence:.0%} via {c.classification_source})")
-        if c.detected_topic:
-            print(f"{prefix}Topic: {c.detected_topic}")
+        if c.is_finance:
+            conf_color = "green" if c.confidence >= 0.8 else "yellow"
+            console.print(
+                f"  {tag} [success]FINANCE[/success] "
+                f"[{conf_color}]{c.confidence:.0%}[/{conf_color}] "
+                f"via {c.classification_source}  "
+                f"[dim]topic=[/dim][info]{c.detected_topic}[/info]"
+            )
+        else:
+            console.print(
+                f"  {tag} [skip]NON-FINANCE[/skip] "
+                f"[dim]{c.confidence:.0%} — {c.summary}[/dim]"
+            )
 
+    # --- Plan ---
     if result.plan:
         p = result.plan
-        print(f"{prefix}Type      : {p.script_type}")
-        print(f"{prefix}Title     : {p.title}")
-        print(f"{prefix}Ticker    : {p.ticker}")
-        print(f"{prefix}Direction : {p.direction}")
-        print(f"{prefix}Timeframe : {p.timeframe}")
-        print(f"{prefix}Indicators: {', '.join(p.indicators) or 'none'}")
-        print(f"{prefix}Pattern   : {p.pattern or 'none'}")
+        script_badge = (
+            "[bold green]strategy[/bold green]"
+            if p.script_type == "strategy"
+            else "[bold blue]indicator[/bold blue]"
+        )
+
+        table = Table(show_header=False, box=None, padding=(0, 2), expand=False)
+        table.add_column("key", style="dim", width=12)
+        table.add_column("value")
+        table.add_row("Type", script_badge)
+        table.add_row("Title", f"[bold]{p.title}[/bold]")
+        table.add_row("Ticker", f"[ticker]{p.ticker}[/ticker]")
+        table.add_row("Direction", p.direction)
+        table.add_row("Timeframe", p.timeframe)
+        table.add_row("Indicators", ", ".join(p.indicators) or "[dim]none[/dim]")
+        table.add_row("Pattern", p.pattern or "[dim]none[/dim]")
         if p.key_levels:
-            print(f"{prefix}Levels    : {p.key_levels}")
-    print("=" * 60)
+            levels_str = "  ".join(f"{k}={v}" for k, v in p.key_levels.items())
+            table.add_row("Levels", f"[dim]{levels_str}[/dim]")
 
-    if result.validation and result.validation.errors:
-        print("\nVALIDATION ERRORS:")
-        for err in result.validation.errors:
-            print(f"  x {err}")
+        console.print(table)
 
-    if result.validation and result.validation.warnings:
-        print("\nValidation warnings:")
+    # --- Validation ---
+    if result.validation:
+        if result.validation.valid:
+            console.print(f"  [success]PASS[/success] Validation passed")
+        else:
+            console.print(f"  [error]FAIL[/error] Validation failed:")
+            for err in result.validation.errors:
+                console.print(f"    [error]x[/error] {err}")
+
         for w in result.validation.warnings:
-            print(f"  - {w}")
+            console.print(f"    [warning]![/warning] [dim]{w}[/dim]")
 
-    if result.validation and result.validation.valid:
-        print("\nValidation passed.")
-
+    # --- Pine Script ---
     if result.pine_script:
-        print(f"\n{'~' * 60}")
-        print(result.pine_script)
-        print(f"{'~' * 60}")
+        syntax = Syntax(
+            result.pine_script,
+            "javascript",  # closest to Pine Script
+            theme="monokai",
+            line_numbers=True,
+            word_wrap=True,
+        )
+        console.print(Panel(syntax, title="Pine Script v6", border_style="green", expand=False))
 
+    # --- Save path ---
     if result.output_path:
-        print(f"\nSaved to: {result.output_path}")
+        console.print(f"  [success]Saved[/success] [dim]{result.output_path}[/dim]")
 
 
 def _make_tweet_id(text: str, author: str = "") -> str:
@@ -159,16 +183,19 @@ def main() -> int:
         cache = BookmarkCache()
         count = cache.clear()
         cache.close()
-        print(f"Cleared {count} cached entries.")
+        console.print(f"[warning]Cleared {count} cached entries.[/warning]")
         return 0
 
     if args.cache_stats:
         cache = BookmarkCache()
         stats = cache.stats()
         cache.close()
-        print("Cache statistics:")
+        table = Table(title="Cache Statistics", show_header=True)
+        table.add_column("Metric", style="bold")
+        table.add_column("Count", justify="right", style="cyan")
         for k, v in stats.items():
-            print(f"  {k}: {v}")
+            table.add_row(k, str(v))
+        console.print(table)
         return 0
 
     pipeline = MultiLLMPipeline(
@@ -186,48 +213,44 @@ def main() -> int:
         fetcher = XBookmarkFetcher()
 
         if args.x_username:
-            print(f"Resolving user ID for @{args.x_username}...")
+            console.print(f"[step]Resolving user ID for @{args.x_username}...[/step]")
             fetcher.user_id = fetcher.resolve_user_id(args.x_username)
-            print(f"  -> User ID: {fetcher.user_id}")
+            console.print(f"  [dim]User ID: {fetcher.user_id}[/dim]")
 
-        print(f"Fetching up to {args.max_results} bookmarks...")
+        console.print(f"[step]Fetching up to {args.max_results} bookmarks...[/step]")
         try:
             bookmarks = fetcher.fetch(max_results=args.max_results)
         except Exception as e:
-            print(f"\nx Failed to fetch bookmarks: {e}")
+            console.print(f"[error]Failed to fetch bookmarks: {e}[/error]")
             return 1
-        print(f"  -> Fetched {len(bookmarks)} bookmark(s).\n")
+        console.print(f"  [success]Fetched {len(bookmarks)} bookmark(s)[/success]\n")
 
         if not bookmarks:
-            print("No bookmarks returned.")
+            console.print("[warning]No bookmarks returned.[/warning]")
             return 1
 
         use_vision = not args.no_vision
         save = not args.no_save
         batch_t0 = time.time()
 
-        def _process_bookmark(i: int, bm) -> tuple[int, PipelineResult]:
-            """Process a single bookmark (vision + full pipeline). Thread-safe."""
-            tag = f"[{i}/{len(bookmarks)}]"
+        def _process_bookmark(i: int, bm) -> tuple[int, PipelineResult, float]:
+            """Process a single bookmark. Returns (index, result, elapsed)."""
+            t0 = time.time()
             tweet_id = getattr(bm, "tweet_id", None) or _make_tweet_id(bm.text, bm.author)
             tweet_url = f"https://x.com/{bm.author}/status/{tweet_id}" if bm.author else ""
 
-            print(f"\n{tag} @{bm.author or 'unknown'} - {bm.date or 'undated'}")
-            print(f"  {bm.text[:120]}{'...' if len(bm.text) > 120 else ''}")
-
             # Skip if fully cached
             if pipeline.cache and pipeline.cache.has_script(tweet_id):
-                print(f"  {tag} [cache] Already processed — skipping")
-                return i, pipeline.run(
+                result = pipeline.run(
                     tweet_id=tweet_id, tweet_text=bm.text,
                     author=bm.author, tweet_date=bm.date,
                     tweet_url=tweet_url, save=save,
                 )
+                return i, result, time.time() - t0
 
             # Vision analysis
             chart_description = ""
             if use_vision and bm.media_urls:
-                print(f"  {tag} Analyzing {len(bm.media_urls)} image(s) with Claude vision...")
                 vision = ClaudeVisionAnalyzer()
                 chart_description = vision.analyze_all(bm.media_urls)
 
@@ -242,16 +265,17 @@ def main() -> int:
                 tweet_url=tweet_url,
                 save=save,
             )
-            return i, result
+            return i, result, time.time() - t0
 
         # Process all bookmarks in parallel
         max_workers = min(len(bookmarks), 5)
-        results: list[tuple[int, PipelineResult]] = []
+        results: list[tuple[int, PipelineResult, float]] = []
+
+        console.print(Rule(f"Processing {len(bookmarks)} bookmarks ({max_workers} workers)", style="cyan"))
 
         if len(bookmarks) == 1:
             results.append(_process_bookmark(1, bookmarks[0]))
         else:
-            print(f"\nProcessing {len(bookmarks)} bookmarks in parallel ({max_workers} workers)...")
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(_process_bookmark, i, bm): i
@@ -263,13 +287,56 @@ def main() -> int:
         # Print results in original order
         results.sort(key=lambda x: x[0])
         exit_code = 0
-        for i, result in results:
-            _print_result(result, index=i)
-            if result.validation and not result.validation.valid:
-                exit_code = 1
+        cached_count = 0
+        processed_count = 0
+        skipped_count = 0
+        failed_count = 0
 
-        elapsed = time.time() - batch_t0
-        print(f"\nBatch complete: {len(bookmarks)} bookmarks in {elapsed:.1f}s")
+        for i, result, elapsed in results:
+            bm = bookmarks[i - 1]
+            console.print()
+            console.print(Rule(style="dim"))
+
+            # Bookmark header
+            console.print(
+                f"  [tag]\\[{i}/{len(bookmarks)}][/tag] "
+                f"[author]@{bm.author or 'unknown'}[/author] "
+                f"[dim]{bm.date or 'undated'}[/dim]  "
+                f"[dim]{elapsed:.1f}s[/dim]"
+            )
+            tweet_text = bm.text[:140].replace('\n', ' ')
+            console.print(f"  [dim]{tweet_text}{'...' if len(bm.text) > 140 else ''}[/dim]")
+
+            _print_result(result, index=i)
+
+            if result.cached:
+                cached_count += 1
+            elif result.skipped:
+                skipped_count += 1
+            elif result.error or (result.validation and not result.validation.valid):
+                failed_count += 1
+                exit_code = 1
+            else:
+                processed_count += 1
+
+        # Summary
+        total_elapsed = time.time() - batch_t0
+        console.print()
+        console.print(Rule(style="cyan"))
+        summary_parts = []
+        if processed_count:
+            summary_parts.append(f"[success]{processed_count} processed[/success]")
+        if cached_count:
+            summary_parts.append(f"[cached]{cached_count} cached[/cached]")
+        if skipped_count:
+            summary_parts.append(f"[skip]{skipped_count} skipped[/skip]")
+        if failed_count:
+            summary_parts.append(f"[error]{failed_count} failed[/error]")
+
+        console.print(
+            f"  {' | '.join(summary_parts)}  "
+            f"[dim]in {total_elapsed:.1f}s[/dim]"
+        )
         return exit_code
 
     # -----------------------------------------------------------------------
@@ -301,7 +368,7 @@ def main() -> int:
     # Analyze chart image URL via vision if provided
     if chart_url and not chart_description and not args.no_vision:
         from src.generators.vision_analyzer import ClaudeVisionAnalyzer
-        print(f"Analyzing chart image with Claude vision: {chart_url}")
+        console.print(f"[step]Analyzing chart image with Claude vision...[/step]")
         chart_description = ClaudeVisionAnalyzer().analyze(chart_url)
 
     result = pipeline.run(

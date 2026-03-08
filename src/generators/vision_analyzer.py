@@ -120,18 +120,20 @@ class ClaudeVisionAnalyzer:
         Downloads the image first (Anthropic requires base64), then sends
         it via the Messages API with vision content blocks.
         """
+        from src.console import console
+
         if not image_url:
             return ""
 
-        print(f"  [vision] Downloading image: {image_url[:80]}...")
+        console.print(f"    [dim]Downloading image...[/dim]")
         t0 = time.time()
         try:
             b64_data, media_type = _fetch_image_as_base64(image_url, self.timeout)
         except Exception as exc:
-            print(f"  [vision] FAILED to download image ({time.time() - t0:.1f}s): {exc}")
+            console.print(f"    [bold red]Image download failed[/bold red] [dim]{time.time() - t0:.1f}s: {exc}[/dim]")
             return ""
         img_kb = len(b64_data) * 3 // 4 // 1024
-        print(f"  [vision] Downloaded {img_kb}KB {media_type} ({time.time() - t0:.1f}s)")
+        console.print(f"    [dim]{img_kb}KB {media_type} ({time.time() - t0:.1f}s)[/dim]")
 
         messages = [
             {
@@ -153,7 +155,7 @@ class ClaudeVisionAnalyzer:
             }
         ]
 
-        print(f"  [vision] Sending to Claude for analysis...")
+        console.print(f"    [dim]Claude vision analyzing...[/dim]")
         t1 = time.time()
         try:
             response = self.client.chat(
@@ -163,18 +165,19 @@ class ClaudeVisionAnalyzer:
             )
             elapsed = time.time() - t1
             desc = response.content.strip()
-            print(f"  [vision] Claude responded ({elapsed:.1f}s, {len(desc)} chars)")
+            console.print(f"    [dim]Vision done ({elapsed:.1f}s, {len(desc)} chars)[/dim]")
             return desc
         except ClientError as exc:
-            print(f"  [vision] FAILED Claude analysis ({time.time() - t1:.1f}s): {exc}")
+            console.print(f"    [bold red]Vision failed[/bold red] [dim]{time.time() - t1:.1f}s: {exc}[/dim]")
             return ""
 
     def analyze_all(self, image_urls: list[str]) -> str:
         """Analyze multiple images and concatenate their descriptions."""
+        from src.console import console
         parts = []
         for i, url in enumerate(image_urls, 1):
             if url:
-                print(f"  [vision] Image {i}/{len(image_urls)}")
+                console.print(f"    [dim]Image {i}/{len(image_urls)}[/dim]")
                 parts.append(self.analyze(url))
         return "\n\n".join(p for p in parts if p)
 

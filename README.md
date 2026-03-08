@@ -1,32 +1,49 @@
 # X Bookmarks → Pine Script v6 Pipeline
 
-A modular Python pipeline that converts X (Twitter) financial bookmarks into executable [TradingView Pine Script v6](https://www.tradingview.com/pine-script-docs/) strategies using [xAI Grok](https://x.ai/).
+A multi-LLM Python pipeline that converts X (Twitter) financial bookmarks into executable [TradingView Pine Script v6](https://www.tradingview.com/pine-script-docs/) strategies and indicators.
+
+Three LLMs, each doing what it's best at:
+- **xAI Grok** — tweet classification (finance or not?)
+- **Claude Opus** — chart vision analysis + strategy/indicator planning
+- **ChatGPT** — Pine Script v6 code generation
 
 ## How It Works
 
 ```
-X Bookmark (text + chart image)
+X Bookmark (text + chart images)
         │
         ▼
-┌──────────────────┐
-│  BookmarkParser   │  Extract ticker, direction, indicators,
-│                   │  patterns, price levels
-└────────┬─────────┘
-         │ TradingSignal
+┌──────────────────────┐
+│  xAI Grok Classifier │  Is this tweet about finance?
+│  (text → image fallback)│  Text first, then images if needed
+└────────┬─────────────┘
+         │ ClassificationResult
          ▼
-┌──────────────────┐
-│ PineScriptGenerator│  Send structured prompt to Grok-4.1
-│  (xAI Grok API)   │  with Pine Script v6 system prompt
-└────────┬─────────┘
-         │ raw Pine Script
+┌──────────────────────┐
+│  Claude Vision       │  Extract structured data from chart images
+│  (Anthropic Opus)    │  Returns JSON: price levels, indicators, tables
+└────────┬─────────────┘
+         │ chart_data JSON
          ▼
-┌──────────────────┐
-│ PineScriptValidator│  Static checks: version, strategy(),
-│                   │  inputs, risk mgmt, no repainting
-└────────┬─────────┘
+┌──────────────────────┐
+│  Claude Planner      │  Strategy or indicator? What parameters?
+│  (Anthropic Opus)    │  Returns StrategyPlan with full spec
+└────────┬─────────────┘
+         │ StrategyPlan
+         ▼
+┌──────────────────────┐
+│  ChatGPT Generator   │  Convert plan into Pine Script v6 code
+│  (OpenAI GPT-5.4)    │  Follows strict system prompt rules
+└────────┬─────────────┘
+         │ Pine Script
+         ▼
+┌──────────────────────┐
+│  Validator           │  Static checks: version, declaration,
+│                      │  inputs, risk mgmt, repainting
+└────────┬─────────────┘
          │
          ▼
-   .pine file + .meta.json
+   .pine file + .meta.json + SQLite cache
 ```
 
 ## Quick Start
@@ -41,26 +58,37 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Fill in XAI_API_KEY (always required)
-# Fill in X_USER_ACCESS_TOKEN + X_USER_ID for --fetch mode
+# Fill in all API keys
 ```
 
 **Required env vars:**
 
-| Variable | When needed | Where to get it |
+| Variable | Provider | Purpose |
 |---|---|---|
-| `XAI_API_KEY` | Always | [console.x.ai](https://console.x.ai/) |
-| `X_USER_ACCESS_TOKEN` | `--fetch` | [console.x.com](https://console.x.com/) — OAuth 2.0 with `bookmark.read tweet.read users.read` |
-| `X_USER_ID` | `--fetch` | `curl -H "Authorization: Bearer $X_USER_ACCESS_TOKEN" https://api.twitter.com/2/users/me` |
+| `XAI_API_KEY` | [console.x.ai](https://console.x.ai/) | Tweet classification |
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) | Vision analysis + strategy planning |
+| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/) | Pine Script code generation |
+
+**For `--fetch` mode (live X bookmarks):**
+
+| Variable | Purpose |
+|---|---|
+| `X_USER_ACCESS_TOKEN` | OAuth 2.0 token with `bookmark.read tweet.read users.read` |
+| `X_USER_ID` | Your numeric X user ID |
+| `X_REFRESH_TOKEN` | Enables auto-refresh on 401 (recommended) |
+| `X_CLIENT_ID` | Required for token refresh |
+| `X_CLIENT_SECRET` | Required for token refresh |
+
+Generate tokens with: `python auth_pkce.py`
 
 ### 3. Run
 
-**Fetch live bookmarks from X (processes all in batch, runs Grok vision on chart images):**
+**Fetch and process live bookmarks (parallel, with caching):**
 
 ```bash
 python3 main.py --fetch
 python3 main.py --fetch --max-results 25
-python3 main.py --fetch --x-username YourHandle   # resolves ID automatically
+python3 main.py --fetch --x-username YourHandle
 ```
 
 **From inline text:**
@@ -72,7 +100,7 @@ python3 main.py \
   --date "2026-03-01"
 ```
 
-**With a chart image URL (analyzed automatically by Grok vision):**
+**With a chart image URL:**
 
 ```bash
 python3 main.py \
@@ -90,106 +118,128 @@ python3 main.py --file bookmark.json
 
 ### CLI Options
 
-**Live fetch:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--fetch` | — | Fetch bookmarks live from X API |
-| `--x-username` | — | Resolve user ID from handle (overrides `X_USER_ID`) |
-| `--max-results` | `10` | Max bookmarks to fetch |
-
-**Manual input:**
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--text` | `-t` | Tweet text content |
-| `--chart` | `-c` | Plain-text chart description |
-| `--chart-url` | — | Chart image URL — analyzed by Grok vision automatically |
-| `--author` | `-a` | Tweet author handle |
-| `--date` | `-d` | Tweet date (YYYY-MM-DD) |
-| `--file` | `-f` | Path to JSON bookmark file |
-
-**Pipeline:**
-
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--model` | `-m` | `grok-4.1` | xAI model for Pine Script generation |
-| `--output-dir` | `-o` | `output/` | Directory for output files |
+| `--fetch` | — | — | Fetch bookmarks live from X API |
+| `--x-username` | — | — | Resolve user ID from handle |
+| `--max-results` | — | `10` | Max bookmarks to fetch |
+| `--text` | `-t` | — | Tweet text content |
+| `--chart` | `-c` | — | Plain-text chart description |
+| `--chart-url` | — | — | Chart image URL for Claude vision |
+| `--author` | `-a` | — | Tweet author handle |
+| `--date` | `-d` | — | Tweet date (YYYY-MM-DD) |
+| `--file` | `-f` | — | Path to JSON bookmark file |
+| `--output-dir` | `-o` | `output/` | Output directory |
 | `--no-save` | — | — | Print to stdout only |
-| `--no-vision` | — | — | Skip Grok vision even when image URLs present |
+| `--no-vision` | — | — | Skip chart image analysis |
+| `--no-cache` | — | — | Disable SQLite cache |
+| `--clear-cache` | — | — | Clear all cached results and exit |
+| `--cache-stats` | — | — | Show cache statistics and exit |
 
-## Bookmark JSON Format
+## SQLite Cache
+
+The pipeline caches results in `cache/bookmarks.db` so bookmarks are never re-processed. Each stage is cached independently:
+
+| Stage | Column | Cached After |
+|-------|--------|-------------|
+| Classification | `classification_json` | xAI determines finance/non-finance |
+| Plan | `plan_json` | Claude creates strategy/indicator plan |
+| Script | `pine_script` | ChatGPT generates Pine Script |
+| Validation | `validation_passed`, `validation_errors` | Validator checks the script |
+
+**Cache behavior:**
+- Fully cached bookmarks skip all API calls (including vision analysis)
+- Partially cached bookmarks resume from the last completed stage
+- Non-finance tweets are cached as skipped — never re-classified
+- Cache is thread-safe for parallel processing
+
+**Management:**
+
+```bash
+python3 main.py --cache-stats    # Show counts
+python3 main.py --clear-cache    # Delete all cached results
+python3 main.py --no-cache       # Disable cache for this run
+```
+
+## Output Format
+
+### Pine Script (`.pine`)
+
+Generated Pine Script v6 code, ready to paste into TradingView.
+
+### Metadata (`.meta.json`)
 
 ```json
 {
-  "text": "BTC looking ready for a breakout above $42,000. RSI oversold on the 4h chart...",
-  "chart_description": "Optional plain-text description (skips vision)",
-  "chart_url": "https://pbs.twimg.com/media/example.jpg",
-  "author": "CryptoTrader99",
-  "date": "2026-03-01"
+  "tweet_id": "2030348041346302177",
+  "tweet_url": "https://x.com/Bluekurtic/status/2030348041346302177",
+  "script_type": "strategy",
+  "author": "Bluekurtic",
+  "date": "2026-03-07",
+  "ticker": "SPX",
+  "direction": "long",
+  "timeframe": "D",
+  "indicators": ["VIX", "VVIX"],
+  "pattern": null,
+  "key_levels": {"entry": 5770, "stop_loss": 5700},
+  "rationale": "VIX spike historically precedes mean reversion...",
+  "image_urls": ["https://pbs.twimg.com/media/..."],
+  "chart_data": {
+    "image_type": "chart",
+    "asset": {"ticker": "VIX", "name": "Volatility Index"},
+    "price_levels": {"current": 23.37, "support": [20], "resistance": [30]},
+    "indicators": [{"name": "VVIX", "value": "140+", "signal": "bearish"}],
+    "tabular_data": {"headers": [...], "rows": [...]}
+  },
+  "validation_passed": true,
+  "validation_errors": [],
+  "validation_warnings": []
 }
 ```
 
-## What the Parser Extracts
+## Parallel Processing
 
-- **Tickers** — `$BTC`, `$ETH`, `$SOL`, `$SPX`, `$AAPL`, generic `$TICKER`, etc.
-- **Direction** — long/short/both from keywords (buy, sell, bullish, bearish, calls, puts)
-- **Timeframe** — 1m through monthly
-- **Indicators** — RSI, MACD, EMA, SMA, Bollinger, VWAP, Fibonacci, Ichimoku, ATR, SuperTrend, etc.
-- **Chart patterns** — Head & shoulders, triangles, flags, wedges, cup & handle, channels
-- **Price levels** — Entry, stop-loss, take-profit, support, resistance (with `$42k` shorthand support)
-
-## Pine Script v6 Rules Enforced
-
-Every generated strategy is validated against these rules:
-
-1. `//@version=6` version pragma
-2. `strategy()` declaration with overlay and equity-based sizing
-3. `input.*()` for all tunable parameters
-4. `var`/`varip` for bar-persistent state
-5. `strategy.exit()` with stop-loss and take-profit
-6. `plotshape()`/`plotchar()` for visual entry/exit signals
-7. Citation header crediting the original tweet author and date
-8. No repainting — `barstate.isconfirmed` for entries, explicit `lookahead` on `request.security()`
+In `--fetch` mode, bookmarks are processed in parallel (up to 5 workers). Each bookmark runs its own vision analysis + classification + planning + generation pipeline concurrently. Cached bookmarks are detected before any API calls and skipped immediately.
 
 ## Project Structure
 
 ```
 src/
-├── fetchers/
-│   └── x_bookmark_fetcher.py      # X API v2 bookmark fetcher (live data)
+├── clients/                        # LLM API wrappers (httpx, no SDKs)
+│   ├── base_client.py
+│   ├── xai_client.py
+│   ├── anthropic_client.py
+│   └── openai_client.py
+├── classifiers/
+│   └── finance_classifier.py       # Two-phase text→image classifier (xAI)
+├── planners/
+│   └── strategy_planner.py         # Strategy/indicator planning (Claude)
 ├── generators/
-│   ├── pinescript_generator.py    # TradingSignal → Pine Script (via Grok)
-│   └── vision_analyzer.py         # Chart image URL → description (Grok vision)
+│   ├── pinescript_generator.py     # Pine Script generation (ChatGPT)
+│   └── vision_analyzer.py          # Chart image analysis (Claude vision)
 ├── parsers/
-│   └── bookmark_parser.py         # Tweet → TradingSignal
-├── prompts/
-│   └── grok_system_prompt.py      # System prompt for Pine Script generation
+│   └── bookmark_parser.py          # Regex-based tweet parser
 ├── validators/
-│   └── pinescript_validator.py    # Static v6 validation
-└── pipeline.py                    # End-to-end orchestrator
-main.py                            # CLI entrypoint
-.env.example                       # Environment variable template
+│   └── pinescript_validator.py     # Static v6 validation
+├── cache/
+│   └── bookmark_cache.py           # Thread-safe SQLite cache
+├── fetchers/
+│   └── x_bookmark_fetcher.py       # X API v2 (auto token refresh)
+├── prompts/
+│   ├── grok_system_prompt.py       # Pine Script system prompt
+│   ├── classification_prompts.py   # Finance classification prompts
+│   └── planning_prompts.py         # Strategy planning prompt
+├── console.py                      # Rich console + theme
+└── pipeline.py                     # Multi-LLM orchestrator
+main.py                             # CLI entrypoint
+auth_pkce.py                        # OAuth 2.0 PKCE token helper
+tests/                              # 68 unit tests
 ```
 
-## Programmatic Usage
+## Tests
 
-```python
-from src.pipeline import BookmarkToPineScriptPipeline
-
-pipeline = BookmarkToPineScriptPipeline(api_key="xai-...")
-result = pipeline.run(
-    tweet_text="BTC breakout above $42k, RSI oversold. Target $45k, SL $40k",
-    chart_description="Ascending triangle on 4h BTCUSDT",
-    author="CryptoTrader99",
-    tweet_date="2026-03-01",
-)
-
-print(result.pine_script)          # The generated Pine Script v6 code
-print(result.validation.valid)     # True if all checks pass
-print(result.validation.errors)    # List of hard errors
-print(result.validation.warnings)  # List of soft warnings
-print(result.output_path)          # Path to saved .pine file
+```bash
+python3 -m pytest tests/ -v
 ```
 
 ## License
