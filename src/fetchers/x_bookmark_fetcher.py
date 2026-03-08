@@ -46,6 +46,9 @@ class XBookmark:
     author: str = ""
     date: str = ""          # ISO-8601 date portion: YYYY-MM-DD
     media_urls: list[str] = field(default_factory=list)
+    is_article: bool = False
+    article_url: str = ""
+    expanded_urls: list[str] = field(default_factory=list)
 
 
 class XBookmarkFetcher:
@@ -232,7 +235,7 @@ class XBookmarkFetcher:
         url = f"{_X_API_BASE}/users/{self.user_id}/bookmarks"
         params: dict = {
             "max_results": str(page_size),
-            "tweet.fields": "text,author_id,created_at,attachments",
+            "tweet.fields": "text,author_id,created_at,attachments,note_tweet,entities",
             "expansions": "author_id,attachments.media_keys",
             "user.fields": "username",
             "media.fields": "url,preview_image_url,type",
@@ -273,13 +276,25 @@ class XBookmarkFetcher:
             media_keys = tweet.get("attachments", {}).get("media_keys", [])
             media_urls = [media_by_key[k] for k in media_keys if k in media_by_key]
 
+            # Prefer note_tweet full text over truncated text
+            note_text = tweet.get("note_tweet", {}).get("text", "")
+            text = note_text if note_text else tweet.get("text", "")
+
+            # Extract expanded URLs and detect articles
+            urls = tweet.get("entities", {}).get("urls", [])
+            expanded_urls = [u.get("expanded_url", "") for u in urls if u.get("expanded_url")]
+            article_url = next((u for u in expanded_urls if "/articles/" in u), "")
+
             bookmarks.append(
                 XBookmark(
                     tweet_id=tweet["id"],
-                    text=tweet.get("text", ""),
+                    text=text,
                     author=author,
                     date=date,
                     media_urls=media_urls,
+                    is_article=bool(article_url),
+                    article_url=article_url,
+                    expanded_urls=expanded_urls,
                 )
             )
 
