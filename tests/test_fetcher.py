@@ -158,8 +158,8 @@ class TestLongFormContent:
             assert bookmarks[0].text == "Short regular tweet"
             assert not bookmarks[0].is_article
 
-    def test_article_detected_from_entities(self, fetcher):
-        """Articles should be detected from entities.urls expanded_url pattern."""
+    def test_article_detected_from_entities_plural(self, fetcher):
+        """Articles should be detected from /articles/ URL pattern."""
         with patch("httpx.Client") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -178,7 +178,6 @@ class TestLongFormContent:
                                 {
                                     "url": "https://t.co/abc123",
                                     "expanded_url": "https://x.com/i/articles/987654321",
-                                    "display_url": "x.com/i/articles/987654321",
                                 }
                             ]
                         },
@@ -195,6 +194,86 @@ class TestLongFormContent:
             bookmarks = fetcher.fetch(max_results=10)
             assert bookmarks[0].is_article
             assert bookmarks[0].article_url == "https://x.com/i/articles/987654321"
+
+    def test_article_detected_from_singular_url(self, fetcher):
+        """Articles should be detected from /article/ (singular) URL pattern too."""
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            mock_resp.json.return_value = {
+                "data": [
+                    {
+                        "id": "art2",
+                        "text": "https://t.co/xyz789",
+                        "author_id": "789",
+                        "created_at": "2026-03-08T10:00:00Z",
+                        "article": {"title": "Quant Desk Simulation"},
+                        "entities": {
+                            "urls": [
+                                {
+                                    "url": "https://t.co/xyz789",
+                                    "expanded_url": "http://x.com/i/article/2027371960175386624",
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "includes": {
+                    "users": [{"id": "789", "username": "gemchange_ltd"}],
+                },
+                "meta": {},
+            }
+            mock_client.get.return_value = mock_resp
+            mock_client_cls.return_value = mock_client
+
+            bookmarks = fetcher.fetch(max_results=10)
+            assert bookmarks[0].is_article
+            assert "article" in bookmarks[0].article_url
+            # Article title should be prepended to text
+            assert "Quant Desk Simulation" in bookmarks[0].text
+
+    def test_article_object_title_prepended(self, fetcher):
+        """When the API returns an article object with title, prepend it to text."""
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            mock_resp.json.return_value = {
+                "data": [
+                    {
+                        "id": "art3",
+                        "text": "https://t.co/abc",
+                        "author_id": "789",
+                        "created_at": "2026-03-08T10:00:00Z",
+                        "article": {
+                            "title": "How to Simulate Like a Quant Desk"
+                        },
+                        "entities": {
+                            "urls": [
+                                {
+                                    "url": "https://t.co/abc",
+                                    "expanded_url": "http://x.com/i/article/123456",
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "includes": {
+                    "users": [{"id": "789", "username": "gemchange_ltd"}],
+                },
+                "meta": {},
+            }
+            mock_client.get.return_value = mock_resp
+            mock_client_cls.return_value = mock_client
+
+            bookmarks = fetcher.fetch(max_results=10)
+            assert bookmarks[0].text.startswith("How to Simulate Like a Quant Desk")
+            assert bookmarks[0].is_article
 
     def test_expanded_urls_extracted(self, fetcher):
         """All expanded URLs from entities should be captured."""

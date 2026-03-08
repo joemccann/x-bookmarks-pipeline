@@ -280,10 +280,23 @@ class XBookmarkFetcher:
             note_text = tweet.get("note_tweet", {}).get("text", "")
             text = note_text if note_text else tweet.get("text", "")
 
+            # If this is an article, prepend the title to the text
+            article_obj = tweet.get("article")
+            if article_obj and article_obj.get("title"):
+                title = article_obj["title"]
+                if title not in text:
+                    text = f"{title}\n\n{text}" if text else title
+
             # Extract expanded URLs and detect articles
             urls = tweet.get("entities", {}).get("urls", [])
             expanded_urls = [u.get("expanded_url", "") for u in urls if u.get("expanded_url")]
-            article_url = next((u for u in expanded_urls if "/articles/" in u), "")
+            article_url = next(
+                (u for u in expanded_urls if "/article/" in u or "/articles/" in u),
+                "",
+            )
+            # Also detect via the article object
+            if not article_url and article_obj:
+                article_url = next((u for u in expanded_urls), "")
 
             bookmarks.append(
                 XBookmark(
