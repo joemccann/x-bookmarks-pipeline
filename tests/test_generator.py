@@ -8,6 +8,7 @@ from src.generators.pinescript_generator import PineScriptGenerator, GenerationE
 from src.planners.strategy_planner import StrategyPlan
 from src.clients.openai_client import OpenAIClient
 from src.clients.base_client import LLMResponse, ClientError
+from src.config import OPENAI_MODEL
 
 
 @pytest.fixture
@@ -17,7 +18,7 @@ def mock_openai_client():
 
 @pytest.fixture
 def generator(mock_openai_client):
-    mock_openai_client.model = "gpt-5.4"
+    mock_openai_client.model = OPENAI_MODEL
     return PineScriptGenerator(client=mock_openai_client)
 
 

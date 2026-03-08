@@ -98,6 +98,24 @@ python main.py --clear-cache
 | `X_CLIENT_ID` | Optional | Required for token refresh |
 | `X_CLIENT_SECRET` | Optional | Required for token refresh |
 
+### Optional Config Overrides
+
+All defaults live in `src/config.py` and can be overridden via env vars:
+
+| Variable | Default | What it controls |
+|---|---|---|
+| `XAI_MODEL` | `grok-4-0709` | Classification model |
+| `ANTHROPIC_MODEL` | `claude-opus-4-6` | Vision + planning model |
+| `OPENAI_MODEL` | `gpt-5.4` | Code generation model |
+| `API_TIMEOUT` | `120` | LLM API timeout (seconds) |
+| `VISION_TIMEOUT` | `60` | Image analysis timeout |
+| `FETCH_TIMEOUT` | `30` | X API timeout |
+| `MAX_WORKERS` | `5` | Parallel workers (`--workers` CLI flag) |
+| `OUTPUT_DIR` | `output` | Pine Script output dir |
+| `CACHE_PATH` | `cache/bookmarks.db` | SQLite cache location |
+| `DEFAULT_TICKER` | `BTCUSDT` | Fallback ticker |
+| `DEFAULT_TIMEFRAME` | `D` | Fallback timeframe |
+
 ## SQLite Cache
 
 Located at `cache/bookmarks.db`. Caches each pipeline stage independently:

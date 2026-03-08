@@ -8,6 +8,7 @@ import httpx
 
 from src.clients.base_client import BaseClient, ClientError, LLMResponse
 from src.clients.xai_client import XAIClient
+from src.config import XAI_MODEL, ANTHROPIC_MODEL, OPENAI_MODEL
 from src.clients.anthropic_client import AnthropicClient
 from src.clients.openai_client import OpenAIClient
 
@@ -66,7 +67,7 @@ class TestXAIClient:
         client = XAIClient(api_key="test-xai-key")
         with patch.object(client, "_post", return_value={
             "choices": [{"message": {"content": "hello"}}],
-            "model": "grok-4-0709",
+            "model": XAI_MODEL,
             "usage": {"total_tokens": 10},
         }):
             resp = client.chat(messages=[{"role": "user", "content": "hi"}])
@@ -114,7 +115,7 @@ class TestAnthropicClient:
         client = AnthropicClient(api_key="test-anthropic-key")
         with patch.object(client, "_post", return_value={
             "content": [{"type": "text", "text": "response"}],
-            "model": "claude-opus-4-6",
+            "model": ANTHROPIC_MODEL,
         }) as mock_post:
             client.chat(messages=[
                 {"role": "system", "content": "be helpful"},
@@ -129,7 +130,7 @@ class TestAnthropicClient:
         client = AnthropicClient(api_key="test-anthropic-key")
         with patch.object(client, "_post", return_value={
             "content": [{"type": "text", "text": "hello from claude"}],
-            "model": "claude-opus-4-6",
+            "model": ANTHROPIC_MODEL,
         }):
             resp = client.chat(messages=[{"role": "user", "content": "hi"}])
             assert resp.content == "hello from claude"
@@ -153,7 +154,7 @@ class TestOpenAIClient:
         client = OpenAIClient(api_key="test-openai-key")
         with patch.object(client, "_post", return_value={
             "choices": [{"message": {"content": "pine script code"}}],
-            "model": "gpt-5.4",
+            "model": OPENAI_MODEL,
         }):
             resp = client.chat(messages=[{"role": "user", "content": "generate"}])
             assert resp.content == "pine script code"

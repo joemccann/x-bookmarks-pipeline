@@ -10,6 +10,7 @@ from src.classifiers.finance_classifier import ClassificationResult, Classificat
 from src.planners.strategy_planner import StrategyPlan, PlanningError
 from src.generators.pinescript_generator import GenerationError
 from src.validators.pinescript_validator import ValidationResult
+from src.config import OPENAI_MODEL
 from tests.conftest import VALID_STRATEGY_PINE
 
 
@@ -23,7 +24,7 @@ def pipeline(tmp_path):
         mock_xai.return_value = MagicMock()
         mock_anthropic.return_value = MagicMock()
         mock_openai_inst = MagicMock()
-        mock_openai_inst.model = "gpt-5.4"
+        mock_openai_inst.model = OPENAI_MODEL
         mock_openai.return_value = mock_openai_inst
 
         p = MultiLLMPipeline(
