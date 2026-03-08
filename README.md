@@ -1,11 +1,11 @@
 # X Bookmarks → Pine Script v6 Pipeline
 
-A multi-LLM Python pipeline that converts X (Twitter) financial bookmarks into executable [TradingView Pine Script v6](https://www.tradingview.com/pine-script-docs/) strategies and indicators.
+A multi-LLM Python pipeline that fetches your X (Twitter) bookmarks, classifies which ones are finance-related, extracts structured data from chart images, plans a trading strategy or indicator, and generates executable [TradingView Pine Script v6](https://www.tradingview.com/pine-script-docs/) — all automatically, in parallel, with SQLite caching so nothing is processed twice.
 
 Three LLMs, each doing what it's best at:
-- **xAI Grok** — tweet classification (finance or not?)
-- **Claude Opus** — chart vision analysis + strategy/indicator planning
-- **ChatGPT** — Pine Script v6 code generation
+- **xAI Grok** — tweet classification (is it finance? text first, then image fallback)
+- **Claude Opus** — chart vision analysis (structured JSON extraction) + strategy/indicator planning
+- **ChatGPT** — Pine Script v6 code generation (with self-validation checklist)
 
 ## How It Works
 
@@ -236,11 +236,17 @@ auth_pkce.py                        # OAuth 2.0 PKCE token helper
 tests/                              # 68 unit tests
 ```
 
+## Security
+
+A pre-commit hook scans all staged files for leaked secrets (API keys, tokens, PII) and blocks the commit if found. Patterns checked: Anthropic, OpenAI, xAI, AWS keys, private keys, SSNs, emails.
+
 ## Tests
 
 ```bash
 python3 -m pytest tests/ -v
 ```
+
+68 unit tests covering all modules: clients, classifier, planner, cache, generator, pipeline, validator, and CLI.
 
 ## License
 

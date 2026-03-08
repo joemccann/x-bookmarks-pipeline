@@ -123,16 +123,23 @@ Cache is thread-safe (uses `threading.Lock`). Bookmarks are never re-processed u
 
 ## Pine Script Rules
 
-Generated scripts must follow these rules (enforced by the system prompt and validator):
+Generated scripts must follow these rules (enforced by the system prompt, self-validation checklist, and static validator):
 
 1. `//@version=6` — strictly v6.
-2. `strategy()` or `indicator()` declaration with overlay.
+2. `strategy()` or `indicator()` declaration matching the plan's `script_type`.
 3. All tunable params via `input.*()`.
 4. `var`/`varip` for persistent state.
-5. `strategy.exit()` with stop-loss and take-profit (strategies only).
+5. `strategy.exit()` with stop-loss and take-profit (strategies only — indicators must NOT use `strategy.*` calls).
 6. `plotshape()`/`plotchar()`/`plot()` for visual signals.
 7. Citation header crediting the original tweet author.
 8. No repainting — `barstate.isconfirmed` for entries, explicit `lookahead` on `request.security()`.
+9. ChatGPT runs a 10-point self-validation checklist before returning code.
+
+## Security
+
+- Pre-commit hook blocks commits containing API keys, tokens, PII.
+- `.env` is gitignored — secrets never enter version control.
+- X API tokens auto-refresh on 401 and persist to `.env`.
 
 ## Output
 
