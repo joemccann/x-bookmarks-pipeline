@@ -1,8 +1,7 @@
 """
 Pine Script v6 Validator — static checks to catch common issues before
-the user pastes the strategy into TradingView.
+the user pastes the strategy/indicator into TradingView.
 """
-
 from __future__ import annotations
 
 import re
@@ -26,15 +25,18 @@ class ValidationResult:
 class PineScriptValidator:
     """Run static validation rules against generated Pine Script v6 code."""
 
-    def validate(self, code: str) -> ValidationResult:
+    def validate(self, code: str, script_type: str = "strategy") -> ValidationResult:
         result = ValidationResult()
 
         self._check_version(code, result)
-        self._check_strategy_declaration(code, result)
+        self._check_declaration(code, result, script_type)
         self._check_inputs(code, result)
-        self._check_risk_management(code, result)
+
+        if script_type == "strategy":
+            self._check_risk_management(code, result)
+
         self._check_visual_signals(code, result)
-        self._check_citation_header(code, result)
+        self._check_citation_header(code, result, script_type)
         self._check_no_repainting(code, result)
 
         return result
@@ -49,14 +51,18 @@ class PineScriptValidator:
             r.fail("Missing or incorrect version pragma. Must start with //@version=6")
 
     @staticmethod
-    def _check_strategy_declaration(code: str, r: ValidationResult) -> None:
-        if "strategy(" not in code:
-            r.fail("No strategy() declaration found.")
+    def _check_declaration(code: str, r: ValidationResult, script_type: str) -> None:
+        if script_type == "indicator":
+            if "indicator(" not in code:
+                r.fail("No indicator() declaration found.")
+        else:
+            if "strategy(" not in code:
+                r.fail("No strategy() declaration found.")
 
     @staticmethod
     def _check_inputs(code: str, r: ValidationResult) -> None:
         if "input." not in code and "input(" not in code:
-            r.warn("No input.*() calls found. Strategy parameters should be user-tunable.")
+            r.warn("No input.*() calls found. Parameters should be user-tunable.")
 
     @staticmethod
     def _check_risk_management(code: str, r: ValidationResult) -> None:
@@ -73,12 +79,24 @@ class PineScriptValidator:
 
     @staticmethod
     def _check_visual_signals(code: str, r: ValidationResult) -> None:
-        if "plotshape" not in code and "plotchar" not in code:
-            r.warn("No plotshape() or plotchar() found. Visual signals are recommended.")
+        if "plotshape" not in code and "plotchar" not in code and "plot(" not in code:
+            r.warn("No plotshape(), plotchar(), or plot() found. Visual signals are recommended.")
 
     @staticmethod
-    def _check_citation_header(code: str, r: ValidationResult) -> None:
-        if "Source" not in code and "@" not in code.split("strategy(")[0] if "strategy(" in code else "":
+    def _check_citation_header(code: str, r: ValidationResult, script_type: str) -> None:
+        decl = "strategy(" if script_type == "strategy" else "indicator("
+        if decl in code:
+            header = code.split(decl)[0]
+        else:
+            header = code
+        header_lines = [
+            ln for ln in header.splitlines()
+            if not ln.strip().startswith("//@version")
+        ]
+        header_text = "\n".join(header_lines)
+        has_source = "Source" in header_text
+        has_author = "@" in header_text
+        if not has_source and not has_author:
             r.warn("Citation header with tweet author not detected.")
 
     @staticmethod

@@ -1,135 +1,119 @@
 """
-Pine Script Generator — calls xAI Grok to convert a TradingSignal into
-a complete Pine Script v6 strategy.
-
-This module is the core bridge between X bookmark data and executable
-TradingView code.
+Pine Script Generator — calls OpenAI ChatGPT to convert a StrategyPlan into
+a complete Pine Script v6 strategy or indicator.
 """
-
 from __future__ import annotations
 
 import json
-import os
 import re
-from dataclasses import asdict
 from typing import Optional
 
-import httpx
-
-from src.parsers.bookmark_parser import TradingSignal
+from src.clients.openai_client import OpenAIClient
+from src.clients.base_client import ClientError
+from src.planners.strategy_planner import StrategyPlan
 from src.prompts import GROK_PINESCRIPT_SYSTEM_PROMPT
 
 
-_XAI_BASE_URL = "https://api.x.ai/v1"
-_DEFAULT_MODEL = "grok-4.1"
+class GenerationError(Exception):
+    """Raised when Pine Script generation fails."""
 
 
 class PineScriptGenerator:
-    """Bridge that sends structured bookmark data to Grok and returns Pine Script."""
+    """Bridge that sends a StrategyPlan to ChatGPT and returns Pine Script."""
 
     def __init__(
         self,
+        client: Optional[OpenAIClient] = None,
         api_key: Optional[str] = None,
-        model: str = _DEFAULT_MODEL,
-        base_url: str = _XAI_BASE_URL,
+        model: str = "gpt-5.4",
         timeout: float = 120.0,
     ) -> None:
-        self.api_key = api_key or os.environ.get("XAI_API_KEY", "")
-        if not self.api_key:
-            raise ValueError(
-                "xAI API key is required. Set XAI_API_KEY env var or pass api_key=."
-            )
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        if client:
+            self.client = client
+        else:
+            self.client = OpenAIClient(api_key=api_key, model=model, timeout=timeout)
+        self.model = self.client.model
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def generate(self, signal: TradingSignal) -> str:
-        """Send the trading signal to Grok and return raw Pine Script code."""
-        user_prompt = self._build_user_prompt(signal)
-        response_text = self._call_grok(user_prompt, signal.chart_description)
-        pine_code = self._extract_pinescript(response_text)
-        return pine_code
-
-    # ------------------------------------------------------------------
-    # Prompt construction
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_user_prompt(signal: TradingSignal) -> str:
-        parts: list[str] = []
-        parts.append("=== BOOKMARK PAYLOAD ===\n")
-        parts.append(f"Author : @{signal.author}")
-        parts.append(f"Date   : {signal.tweet_date}")
-        parts.append(f"Ticker : {signal.ticker}")
-        parts.append(f"Direction : {signal.direction}")
-        parts.append(f"Timeframe : {signal.timeframe}")
-        parts.append(f"\n--- Tweet Text ---\n{signal.raw_text}")
-
-        if signal.chart_description:
-            parts.append(f"\n--- Chart Image Description ---\n{signal.chart_description}")
-
-        if signal.indicators:
-            parts.append(f"\n--- Detected Indicators ---\n{', '.join(signal.indicators)}")
-
-        if signal.pattern:
-            parts.append(f"\n--- Detected Pattern ---\n{signal.pattern}")
-
-        if signal.key_levels:
-            levels_str = json.dumps(signal.key_levels, indent=2)
-            parts.append(f"\n--- Key Price Levels ---\n{levels_str}")
-
-        parts.append(
-            "\nGenerate the Pine Script v6 strategy now. "
-            "Follow every rule in your system prompt."
-        )
-        return "\n".join(parts)
-
-    # ------------------------------------------------------------------
-    # Grok API call
-    # ------------------------------------------------------------------
-
-    def _call_grok(self, user_prompt: str, chart_description: str = "") -> str:
-        """Call the xAI chat completions endpoint."""
+    def generate(self, plan: StrategyPlan) -> str:
+        """Send the strategy plan to ChatGPT and return raw Pine Script code."""
+        user_prompt = self._build_user_prompt(plan)
         messages = [
             {"role": "system", "content": GROK_PINESCRIPT_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
+        try:
+            response = self.client.chat(messages=messages, max_tokens=4096)
+            return self._extract_pinescript(response.content)
+        except ClientError as e:
+            raise GenerationError(f"Pine Script generation failed: {e}")
 
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": 4096,
-        }
+    @staticmethod
+    def _build_user_prompt(plan: StrategyPlan) -> str:
+        parts: list[str] = []
+        parts.append("=== STRATEGY PLAN ===\n")
+        parts.append(f"Script Type : {plan.script_type}")
+        parts.append(f"Title       : {plan.title}")
+        parts.append(f"Author      : @{plan.author}")
+        parts.append(f"Date        : {plan.tweet_date}")
+        parts.append(f"Ticker      : {plan.ticker}")
+        parts.append(f"Direction   : {plan.direction}")
+        parts.append(f"Timeframe   : {plan.timeframe}")
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        if plan.indicators:
+            parts.append(f"\n--- Indicators ---\n{', '.join(plan.indicators)}")
 
-        with httpx.Client(timeout=self.timeout) as client:
-            resp = client.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
+        if plan.indicator_params:
+            parts.append(f"\n--- Indicator Parameters ---\n{json.dumps(plan.indicator_params, indent=2)}")
+
+        if plan.entry_conditions:
+            parts.append(f"\n--- Entry Conditions ---")
+            for i, cond in enumerate(plan.entry_conditions, 1):
+                parts.append(f"  {i}. {cond}")
+
+        if plan.exit_conditions:
+            parts.append(f"\n--- Exit Conditions ---")
+            for i, cond in enumerate(plan.exit_conditions, 1):
+                parts.append(f"  {i}. {cond}")
+
+        if plan.risk_management:
+            parts.append(f"\n--- Risk Management ---\n{json.dumps(plan.risk_management, indent=2)}")
+
+        if plan.key_levels:
+            parts.append(f"\n--- Key Price Levels ---\n{json.dumps(plan.key_levels, indent=2)}")
+
+        if plan.pattern:
+            parts.append(f"\n--- Chart Pattern ---\n{plan.pattern}")
+
+        if plan.visual_signals:
+            parts.append(f"\n--- Visual Signals ---")
+            for sig in plan.visual_signals:
+                parts.append(f"  - {sig}")
+
+        if plan.rationale:
+            parts.append(f"\n--- Rationale ---\n{plan.rationale}")
+
+        if plan.raw_tweet_text:
+            parts.append(f"\n--- Original Tweet ---\n{plan.raw_tweet_text}")
+
+        if plan.chart_description:
+            parts.append(f"\n--- Chart Description ---\n{plan.chart_description}")
+
+        script_type = plan.script_type
+        parts.append(
+            f"\nGenerate the Pine Script v6 {script_type} now. "
+            f"Follow every rule in your system prompt."
+        )
+        if script_type == "indicator":
+            parts.append(
+                "Use indicator() instead of strategy(). "
+                "Do NOT include strategy.entry/exit/order calls."
             )
-            resp.raise_for_status()
 
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-
-    # ------------------------------------------------------------------
-    # Post-processing
-    # ------------------------------------------------------------------
+        return "\n".join(parts)
 
     @staticmethod
     def _extract_pinescript(response: str) -> str:
-        """Extract the Pine Script code block from Grok's response."""
-        # Try fenced code block first
+        """Extract Pine Script code block from the LLM response."""
         m = re.search(
             r"```(?:pinescript|pine)?\s*\n(.*?)```",
             response,
@@ -138,9 +122,7 @@ class PineScriptGenerator:
         if m:
             return m.group(1).strip()
 
-        # Fallback: if the response starts with //@version, take everything
         if response.strip().startswith("//@version"):
             return response.strip()
 
-        # Last resort: return the whole response
         return response.strip()
