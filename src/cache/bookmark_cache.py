@@ -27,10 +27,17 @@ CREATE TABLE IF NOT EXISTS bookmark_cache (
     pine_script TEXT,
     validation_passed INTEGER,
     validation_errors TEXT,
+    chart_data_json TEXT,
+    completed INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
 """
+
+_MIGRATIONS = [
+    "ALTER TABLE bookmark_cache ADD COLUMN chart_data_json TEXT",
+    "ALTER TABLE bookmark_cache ADD COLUMN completed INTEGER DEFAULT 0",
+]
 
 
 class BookmarkCache:
@@ -44,6 +51,17 @@ class BookmarkCache:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(_SCHEMA)
         self._conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add new columns if they don't exist (safe for existing DBs)."""
+        for stmt in _MIGRATIONS:
+            try:
+                with self._lock:
+                    self._conn.execute(stmt)
+                    self._conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     def close(self) -> None:
         with self._lock:
@@ -75,6 +93,14 @@ class BookmarkCache:
         row = self.get(tweet_id)
         return row is not None and row.get("pine_script") is not None
 
+    def has_chart_data(self, tweet_id: str) -> bool:
+        row = self.get(tweet_id)
+        return row is not None and row.get("chart_data_json") is not None
+
+    def has_completed(self, tweet_id: str) -> bool:
+        row = self.get(tweet_id)
+        return row is not None and bool(row.get("completed"))
+
     def get_classification(self, tweet_id: str) -> Optional[ClassificationResult]:
         row = self.get(tweet_id)
         if row is None or row.get("classification_json") is None:
@@ -94,6 +120,12 @@ class BookmarkCache:
         if row is None:
             return None
         return row.get("pine_script")
+
+    def get_chart_data(self, tweet_id: str) -> Optional[dict]:
+        row = self.get(tweet_id)
+        if row is None or row.get("chart_data_json") is None:
+            return None
+        return json.loads(row["chart_data_json"])
 
     # ------------------------------------------------------------------
     # Write
@@ -148,6 +180,31 @@ class BookmarkCache:
             )
             self._conn.commit()
 
+    def save_chart_data(self, tweet_id: str, chart_data: dict) -> None:
+        json_str = json.dumps(chart_data)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO bookmark_cache (tweet_id, chart_data_json, updated_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(tweet_id) DO UPDATE SET
+                     chart_data_json = excluded.chart_data_json,
+                     updated_at = datetime('now')""",
+                (tweet_id, json_str),
+            )
+            self._conn.commit()
+
+    def mark_completed(self, tweet_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO bookmark_cache (tweet_id, completed, updated_at)
+                   VALUES (?, 1, datetime('now'))
+                   ON CONFLICT(tweet_id) DO UPDATE SET
+                     completed = 1,
+                     updated_at = datetime('now')""",
+                (tweet_id,),
+            )
+            self._conn.commit()
+
     # ------------------------------------------------------------------
     # Management
     # ------------------------------------------------------------------
@@ -175,10 +232,14 @@ class BookmarkCache:
             valid = self._conn.execute(
                 "SELECT COUNT(*) FROM bookmark_cache WHERE validation_passed = 1"
             ).fetchone()[0]
+            completed = self._conn.execute(
+                "SELECT COUNT(*) FROM bookmark_cache WHERE completed = 1"
+            ).fetchone()[0]
         return {
             "total": total,
             "classified": classified,
             "planned": planned,
             "scripted": scripted,
             "valid": valid,
+            "completed": completed,
         }

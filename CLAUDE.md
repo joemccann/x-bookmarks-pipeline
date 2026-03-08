@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-X Bookmarks Pipeline — converts X (Twitter) financial bookmarks into executable TradingView Pine Script v6 strategies and indicators via a multi-LLM pipeline (xAI Grok + Claude Opus + ChatGPT).
+X Bookmarks Pipeline — categorizes ALL X (Twitter) bookmarks by topic and generates executable TradingView Pine Script v6 strategies/indicators for finance bookmarks via a multi-LLM pipeline (xAI Grok + Claude Opus + ChatGPT).
+
+Every bookmark gets classified with a `category`/`subcategory` and saved as `.meta.json`. Finance bookmarks additionally get vision analysis, strategy planning, and Pine Script generation.
 
 ## Tech Stack
 
@@ -10,22 +12,20 @@ X Bookmarks Pipeline — converts X (Twitter) financial bookmarks into executabl
 - `httpx` for HTTP (all LLM API calls — no SDKs)
 - `rich` for CLI output formatting
 - `sqlite3` for bookmark caching
-- xAI Grok (`grok-4-0709`) for tweet classification
+- xAI Grok (`grok-4-0709`) for tweet classification (category + finance detection)
 - Claude Opus (`claude-opus-4-6`) for vision analysis + strategy planning
 - ChatGPT (`gpt-5.4`) for Pine Script code generation
 
 ## Pipeline Flow
 
 ```
-Bookmark → [xAI] Classify text → finance?
-  → No: [xAI] Classify images → finance?
-    → No: Skip (cached as non-finance)
-    → Yes: Continue
-  → Yes: Continue
-→ [Claude] Analyze chart images (vision) + Create strategy/indicator plan
-→ [ChatGPT] Generate Pine Script v6 from plan
-→ Validate → Cache → Save
+Bookmark → [xAI] Classify (category, subcategory, is_finance, has_visual_data)
+  → ALL bookmarks: save .meta.json to output/{category}/{subcategory}/
+  → if has images AND (is_finance OR has_visual_data): [Claude] vision → chart_data
+  → if is_finance: [Claude] plan → [ChatGPT] generate .pine → validate
 ```
+
+No bookmarks are discarded. Every bookmark gets a `.meta.json`. Finance bookmarks additionally get `.pine` files.
 
 ## Project Structure
 
@@ -37,7 +37,7 @@ src/
 │   ├── anthropic_client.py         # Claude Opus (planning + vision)
 │   └── openai_client.py            # ChatGPT (code generation)
 ├── classifiers/
-│   └── finance_classifier.py       # Two-phase text→image classifier
+│   └── finance_classifier.py       # BookmarkClassifier: two-phase text→image (category + finance)
 ├── planners/
 │   └── strategy_planner.py         # Strategy vs indicator planning
 ├── generators/
@@ -48,15 +48,16 @@ src/
 ├── validators/
 │   └── pinescript_validator.py     # Static v6 validation (strategy + indicator)
 ├── cache/
-│   └── bookmark_cache.py           # SQLite cache (thread-safe)
+│   └── bookmark_cache.py           # SQLite cache (thread-safe, with chart_data + completed tracking)
 ├── fetchers/
 │   └── x_bookmark_fetcher.py       # X API v2 fetcher (auto token refresh)
 ├── prompts/
 │   ├── grok_system_prompt.py       # Pine Script generation prompt
-│   ├── classification_prompts.py   # Finance classification prompts
+│   ├── classification_prompts.py   # Category + finance classification prompts
 │   └── planning_prompts.py         # Strategy/indicator planning prompt
 ├── console.py                      # Shared Rich console + theme
-└── pipeline.py                     # Multi-LLM orchestrator
+├── config.py                       # Centralized configuration defaults
+└── pipeline.py                     # Multi-LLM orchestrator (classify → vision → plan → generate → save)
 main.py                             # CLI entrypoint
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
 ```
@@ -111,7 +112,7 @@ All defaults live in `src/config.py` and can be overridden via env vars:
 | `VISION_TIMEOUT` | `60` | Image analysis timeout |
 | `FETCH_TIMEOUT` | `30` | X API timeout |
 | `MAX_WORKERS` | `5` | Parallel workers (`--workers` CLI flag) |
-| `OUTPUT_DIR` | `output` | Pine Script output dir |
+| `OUTPUT_DIR` | `output` | Output base dir |
 | `CACHE_PATH` | `cache/bookmarks.db` | SQLite cache location |
 | `DEFAULT_TICKER` | `BTCUSDT` | Fallback ticker |
 | `DEFAULT_TIMEFRAME` | `D` | Fallback timeframe |
@@ -123,13 +124,39 @@ Located at `cache/bookmarks.db`. Caches each pipeline stage independently:
 | Column | Content |
 |---|---|
 | `tweet_id` | Primary key |
-| `classification_json` | xAI classification result |
+| `classification_json` | xAI classification result (category, subcategory, is_finance) |
 | `plan_json` | Claude strategy/indicator plan |
 | `pine_script` | Generated Pine Script code |
 | `validation_passed` | Boolean |
 | `validation_errors` | JSON array of error strings |
+| `chart_data_json` | Claude vision structured analysis |
+| `completed` | Boolean — all pipeline stages finished |
 
-Cache is thread-safe (uses `threading.Lock`). Bookmarks are never re-processed unless `--clear-cache` or `--no-cache` is used.
+Cache is thread-safe (uses `threading.Lock`). Completed bookmarks are never re-processed unless `--clear-cache` or `--no-cache` is used. Schema auto-migrates when new columns are added.
+
+## Output Structure
+
+Output is organized by category:
+
+```
+output/
+├── finance/
+│   ├── crypto/
+│   │   ├── author_BTCUSDT_2026-03-07.pine
+│   │   └── author_BTCUSDT_2026-03-07.meta.json
+│   └── equities/
+│       └── ...
+├── technology/
+│   └── ai/
+│       └── author_2026-03-03_abc12345.meta.json
+└── other/
+    └── general/
+        └── ...
+```
+
+- `.pine` files — generated Pine Script v6 code (finance only)
+- `.meta.json` — metadata for ALL bookmarks (category, chart_data, etc.)
+- SQLite cache in `cache/` (gitignored)
 
 ## Code Conventions
 
@@ -138,6 +165,7 @@ Cache is thread-safe (uses `threading.Lock`). Bookmarks are never re-processed u
 - Dataclasses for structured data (`ClassificationResult`, `StrategyPlan`, `PipelineResult`).
 - No LLM SDKs — raw `httpx` for all API calls.
 - `rich` for all CLI output — import from `src.console`.
+- `BookmarkClassifier` is the primary class name (`FinanceClassifier` is a backward-compatible alias).
 
 ## Pine Script Rules
 
@@ -159,16 +187,10 @@ Generated scripts must follow these rules (enforced by the system prompt, self-v
 - `.env` is gitignored — secrets never enter version control.
 - X API tokens auto-refresh on 401 and persist to `.env`.
 
-## Output
-
-- `.pine` files and `.meta.json` metadata go to `output/` (gitignored).
-- `.meta.json` includes `tweet_url`, `chart_data` (structured JSON from vision), and `image_urls`.
-- SQLite cache in `cache/` (gitignored).
-
 ## Tests
 
 ```bash
 python3 -m pytest tests/ -v
 ```
 
-68 tests covering clients, classifier, planner, cache, generator, pipeline, validator, and CLI.
+127 tests covering clients, classifier, planner, cache, generator, pipeline, validator, vision analyzer, and CLI.

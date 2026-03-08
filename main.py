@@ -3,7 +3,10 @@
 CLI entrypoint for the X Bookmarks -> Pine Script v6 multi-LLM pipeline.
 
 Pipeline flow:
-  Bookmark -> [xAI] Classify -> [Claude] Plan -> [ChatGPT] Generate -> Validate -> Cache
+  Bookmark -> [xAI] Classify -> [Claude] Vision -> [Claude] Plan -> [ChatGPT] Generate -> Validate -> Save
+
+Every bookmark gets categorized and saved. Finance bookmarks additionally
+get Pine Script generation.
 """
 from __future__ import annotations
 
@@ -39,17 +42,12 @@ def _print_result(result: PipelineResult, index: int | None = None) -> None:
 
     # --- CACHED HIT ---
     if result.cached:
+        cat = ""
+        if result.classification:
+            cat = f" [{result.classification.category}/{result.classification.subcategory}]"
         console.print(
-            f"  {tag} [cached]CACHE HIT[/cached] — already processed, skipping",
+            f"  {tag} [cached]CACHE HIT[/cached]{cat} — already processed",
             style="cached",
-        )
-        return
-
-    # --- SKIPPED (non-finance) ---
-    if result.skipped:
-        console.print(
-            f"  {tag} [skip]SKIP[/skip] {result.skip_reason}",
-            style="skip",
         )
         return
 
@@ -61,17 +59,19 @@ def _print_result(result: PipelineResult, index: int | None = None) -> None:
     # --- Classification ---
     if result.classification:
         c = result.classification
+        cat_badge = f"[bold]{c.category}/{c.subcategory}[/bold]"
+
         if c.is_finance:
             conf_color = "green" if c.confidence >= 0.8 else "yellow"
             console.print(
-                f"  {tag} [success]FINANCE[/success] "
+                f"  {tag} [success]FINANCE[/success] {cat_badge} "
                 f"[{conf_color}]{c.confidence:.0%}[/{conf_color}] "
                 f"via {c.classification_source}  "
                 f"[dim]topic=[/dim][info]{c.detected_topic}[/info]"
             )
         else:
             console.print(
-                f"  {tag} [skip]NON-FINANCE[/skip] "
+                f"  {tag} {cat_badge} "
                 f"[dim]{c.confidence:.0%} — {c.summary}[/dim]"
             )
 
@@ -123,9 +123,11 @@ def _print_result(result: PipelineResult, index: int | None = None) -> None:
         )
         console.print(Panel(syntax, title="Pine Script v6", border_style="green", expand=False))
 
-    # --- Save path ---
+    # --- Save paths ---
     if result.output_path:
         console.print(f"  [success]Saved[/success] [dim]{result.output_path}[/dim]")
+    if result.meta_path:
+        console.print(f"  [success]Meta[/success]  [dim]{result.meta_path}[/dim]")
 
 
 def _make_tweet_id(text: str, author: str = "") -> str:
@@ -139,7 +141,7 @@ def _make_tweet_id(text: str, author: str = "") -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Convert X (Twitter) bookmarks into TradingView Pine Script v6 via multi-LLM pipeline.",
+        description="Convert X (Twitter) bookmarks into categorized output with optional Pine Script v6 generation.",
     )
 
     # --- Live fetch mode ---
@@ -203,6 +205,7 @@ def main() -> int:
     pipeline = MultiLLMPipeline(
         output_dir=args.output_dir,
         cache_enabled=not args.no_cache,
+        vision_enabled=not args.no_vision,
     )
 
     # -----------------------------------------------------------------------
@@ -210,7 +213,6 @@ def main() -> int:
     # -----------------------------------------------------------------------
     if args.fetch:
         from src.fetchers.x_bookmark_fetcher import XBookmarkFetcher
-        from src.generators.vision_analyzer import ClaudeVisionAnalyzer
 
         fetcher = XBookmarkFetcher()
 
@@ -231,7 +233,6 @@ def main() -> int:
             console.print("[warning]No bookmarks returned.[/warning]")
             return 1
 
-        use_vision = not args.no_vision
         save = not args.no_save
         batch_t0 = time.time()
 
@@ -241,27 +242,21 @@ def main() -> int:
             tweet_id = getattr(bm, "tweet_id", None) or _make_tweet_id(bm.text, bm.author)
             tweet_url = f"https://x.com/{bm.author}/status/{tweet_id}" if bm.author else ""
 
-            # Skip if fully cached
-            if pipeline.cache and pipeline.cache.has_script(tweet_id):
+            # Skip if fully completed in cache
+            if pipeline.cache and pipeline.cache.has_completed(tweet_id):
                 result = pipeline.run(
                     tweet_id=tweet_id, tweet_text=bm.text,
+                    image_urls=getattr(bm, "media_urls", []),
                     author=bm.author, tweet_date=bm.date,
                     tweet_url=tweet_url, save=save,
                 )
                 return i, result, time.time() - t0
 
-            # Vision analysis
-            chart_description = ""
-            if use_vision and bm.media_urls:
-                vision = ClaudeVisionAnalyzer()
-                chart_description = vision.analyze_all(bm.media_urls)
-
-            # Full pipeline
+            # Full pipeline (vision is handled inside pipeline now)
             result = pipeline.run(
                 tweet_id=tweet_id,
                 tweet_text=bm.text,
                 image_urls=getattr(bm, "media_urls", []),
-                chart_description=chart_description,
                 author=bm.author,
                 tweet_date=bm.date,
                 tweet_url=tweet_url,
@@ -290,8 +285,8 @@ def main() -> int:
         results.sort(key=lambda x: x[0])
         exit_code = 0
         cached_count = 0
-        processed_count = 0
-        skipped_count = 0
+        finance_count = 0
+        categorized_count = 0
         failed_count = 0
 
         for i, result, elapsed in results:
@@ -313,25 +308,25 @@ def main() -> int:
 
             if result.cached:
                 cached_count += 1
-            elif result.skipped:
-                skipped_count += 1
             elif result.error or (result.validation and not result.validation.valid):
                 failed_count += 1
                 exit_code = 1
+            elif result.classification and result.classification.is_finance:
+                finance_count += 1
             else:
-                processed_count += 1
+                categorized_count += 1
 
         # Summary
         total_elapsed = time.time() - batch_t0
         console.print()
         console.print(Rule(style="cyan"))
         summary_parts = []
-        if processed_count:
-            summary_parts.append(f"[success]{processed_count} processed[/success]")
+        if finance_count:
+            summary_parts.append(f"[success]{finance_count} finance[/success]")
+        if categorized_count:
+            summary_parts.append(f"[info]{categorized_count} categorized[/info]")
         if cached_count:
             summary_parts.append(f"[cached]{cached_count} cached[/cached]")
-        if skipped_count:
-            summary_parts.append(f"[skip]{skipped_count} skipped[/skip]")
         if failed_count:
             summary_parts.append(f"[error]{failed_count} failed[/error]")
 
@@ -348,7 +343,6 @@ def main() -> int:
         bookmark = json.loads(Path(args.file).read_text())
         tweet_text = bookmark.get("text", "")
         chart_description = bookmark.get("chart_description", "")
-        chart_url = bookmark.get("chart_url", "")
         author = bookmark.get("author", "")
         tweet_date = bookmark.get("date", "")
         image_urls = bookmark.get("image_urls", [])
@@ -367,12 +361,7 @@ def main() -> int:
         parser.error("Provide either --fetch, --text, or --file.")
         return 1
 
-    # Analyze chart image URL via vision if provided
-    if chart_url and not chart_description and not args.no_vision:
-        from src.generators.vision_analyzer import ClaudeVisionAnalyzer
-        console.print(f"[step]Analyzing chart image with Claude vision...[/step]")
-        chart_description = ClaudeVisionAnalyzer().analyze(chart_url)
-
+    # Pipeline handles vision internally now
     result = pipeline.run(
         tweet_id=tweet_id,
         tweet_text=tweet_text,
@@ -384,7 +373,12 @@ def main() -> int:
         save=not args.no_save,
     )
     _print_result(result)
-    return 0 if (result.validation and result.validation.valid) else 1
+
+    # Finance bookmarks: exit code based on validation
+    if result.classification and result.classification.is_finance:
+        return 0 if (result.validation and result.validation.valid) else 1
+    # Non-finance: always success
+    return 0
 
 
 if __name__ == "__main__":

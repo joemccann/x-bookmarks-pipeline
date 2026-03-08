@@ -1,9 +1,12 @@
 """
-Finance Classifier — uses xAI Grok to determine if a tweet is finance-related.
+Bookmark Classifier — uses xAI Grok to classify tweets by category/subcategory.
 
 Two-phase classification:
   1. Analyze tweet text
   2. If text is non-finance but images exist, analyze images via vision
+
+Every bookmark gets a category/subcategory. Finance bookmarks continue
+through the full Pine Script pipeline.
 """
 from __future__ import annotations
 
@@ -21,12 +24,15 @@ from src.prompts.classification_prompts import (
 
 @dataclass
 class ClassificationResult:
-    """Result of finance classification."""
+    """Result of bookmark classification."""
     tweet_id: str
     is_finance: bool = False
     confidence: float = 0.0
     classification_source: str = ""   # "text" | "image" | "none"
     has_trading_pattern: bool = False
+    has_visual_data: bool = False
+    category: str = "other"
+    subcategory: str = "general"
     detected_topic: str = ""
     summary: str = ""
     raw_text: str = ""
@@ -37,8 +43,8 @@ class ClassificationError(Exception):
     """Raised when classification fails."""
 
 
-class FinanceClassifier:
-    """Two-phase finance classifier using xAI Grok."""
+class BookmarkClassifier:
+    """Two-phase bookmark classifier using xAI Grok."""
 
     def __init__(self, client: Optional[XAIClient] = None) -> None:
         self.client = client or XAIClient()
@@ -60,32 +66,40 @@ class FinanceClassifier:
 
         # Phase 1: text classification
         text_result = self._classify_text(text)
-        if text_result.get("is_finance"):
-            result.is_finance = True
-            result.confidence = text_result.get("confidence", 0.0)
-            result.classification_source = "text"
-            result.has_trading_pattern = text_result.get("has_trading_pattern", False)
-            result.detected_topic = text_result.get("detected_topic", "")
-            result.summary = text_result.get("summary", "")
+        self._apply_result(result, text_result, source="text")
+
+        # If text says finance, we're done
+        if result.is_finance:
             return result
 
         # Phase 2: image classification (if text was non-finance)
         if image_urls:
             image_result = self._classify_images(image_urls)
             if image_result.get("is_finance"):
-                result.is_finance = True
-                result.confidence = image_result.get("confidence", 0.0)
-                result.classification_source = "image"
-                result.has_trading_pattern = image_result.get("has_trading_pattern", False)
-                result.detected_topic = image_result.get("detected_topic", "")
-                result.summary = image_result.get("summary", "")
+                self._apply_result(result, image_result, source="image")
                 return result
+            # Even if not finance, images may have visual data
+            if image_result.get("has_visual_data"):
+                result.has_visual_data = True
 
-        # Neither text nor images are finance
-        result.classification_source = "none"
-        result.summary = text_result.get("summary", "Not finance-related")
-        result.confidence = text_result.get("confidence", 0.0)
+        # Finalize non-finance result
+        if not result.is_finance:
+            result.classification_source = result.classification_source or "none"
+
         return result
+
+    @staticmethod
+    def _apply_result(result: ClassificationResult, data: dict, source: str) -> None:
+        """Apply parsed classification data to result."""
+        result.is_finance = data.get("is_finance", False)
+        result.confidence = data.get("confidence", 0.0)
+        result.classification_source = source
+        result.has_trading_pattern = data.get("has_trading_pattern", False)
+        result.has_visual_data = data.get("has_visual_data", False)
+        result.category = data.get("category", "other")
+        result.subcategory = data.get("subcategory", "general")
+        result.detected_topic = data.get("detected_topic", "")
+        result.summary = data.get("summary", "")
 
     def _classify_text(self, text: str) -> dict:
         """Classify tweet text via Grok."""
@@ -125,3 +139,7 @@ class FinanceClassifier:
             return json.loads(cleaned)
         except json.JSONDecodeError:
             return {"is_finance": False, "summary": "Failed to parse classification response"}
+
+
+# Backward-compatible alias
+FinanceClassifier = BookmarkClassifier

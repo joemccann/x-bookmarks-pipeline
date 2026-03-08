@@ -1,1 +1,1 @@
-from .finance_classifier import FinanceClassifier, ClassificationResult
+from .finance_classifier import BookmarkClassifier, FinanceClassifier, ClassificationResult

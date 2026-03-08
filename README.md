@@ -1,9 +1,11 @@
 # X Bookmarks → Pine Script v6 Pipeline
 
-A multi-LLM Python pipeline that fetches your X (Twitter) bookmarks, classifies which ones are finance-related, extracts structured data from chart images, plans a trading strategy or indicator, and generates executable [TradingView Pine Script v6](https://www.tradingview.com/pine-script-docs/) — all automatically, in parallel, with SQLite caching so nothing is processed twice.
+A multi-LLM Python pipeline that fetches your X (Twitter) bookmarks, classifies them by category, extracts structured data from chart images, plans trading strategies or indicators for finance bookmarks, and generates executable [TradingView Pine Script v6](https://www.tradingview.com/pine-script-docs/) — all automatically, in parallel, with SQLite caching so nothing is processed twice.
+
+**Every bookmark is categorized and saved.** Finance bookmarks additionally get full Pine Script generation.
 
 Three LLMs, each doing what it's best at:
-- **xAI Grok** — tweet classification (is it finance? text first, then image fallback)
+- **xAI Grok** — bookmark classification (category/subcategory + finance detection, text first, then image fallback)
 - **Claude Opus** — chart vision analysis (structured JSON extraction) + strategy/indicator planning
 - **ChatGPT** — Pine Script v6 code generation (with self-validation checklist)
 
@@ -14,25 +16,25 @@ X Bookmark (text + chart images)
         │
         ▼
 ┌──────────────────────┐
-│  xAI Grok Classifier │  Is this tweet about finance?
-│  (text → image fallback)│  Text first, then images if needed
+│  xAI Grok Classifier │  Category + finance detection
+│  (text → image)      │  Returns: category, subcategory, is_finance, has_visual_data
 └────────┬─────────────┘
          │ ClassificationResult
          ▼
 ┌──────────────────────┐
-│  Claude Vision       │  Extract structured data from chart images
+│  Claude Vision       │  For images with finance OR visual data
 │  (Anthropic Opus)    │  Returns JSON: price levels, indicators, tables
 └────────┬─────────────┘
          │ chart_data JSON
          ▼
 ┌──────────────────────┐
-│  Claude Planner      │  Strategy or indicator? What parameters?
+│  Claude Planner      │  Finance only: strategy or indicator?
 │  (Anthropic Opus)    │  Returns StrategyPlan with full spec
 └────────┬─────────────┘
          │ StrategyPlan
          ▼
 ┌──────────────────────┐
-│  ChatGPT Generator   │  Convert plan into Pine Script v6 code
+│  ChatGPT Generator   │  Finance only: plan → Pine Script v6
 │  (OpenAI GPT-5.4)    │  Follows strict system prompt rules
 └────────┬─────────────┘
          │ Pine Script
@@ -43,7 +45,9 @@ X Bookmark (text + chart images)
 └────────┬─────────────┘
          │
          ▼
-   .pine file + .meta.json + SQLite cache
+   output/{category}/{subcategory}/
+   ├── .meta.json (ALL bookmarks)
+   └── .pine (finance only)
 ```
 
 ## Quick Start
@@ -135,6 +139,63 @@ python3 main.py --file bookmark.json
 | `--no-cache` | — | — | Disable SQLite cache |
 | `--clear-cache` | — | — | Clear all cached results and exit |
 | `--cache-stats` | — | — | Show cache statistics and exit |
+| `--workers` | `-w` | `5` | Max parallel workers |
+
+## Output Structure
+
+Output is organized by category and subcategory:
+
+```
+output/
+├── finance/
+│   ├── crypto/
+│   │   ├── trader_BTCUSDT_2026-03-07.pine
+│   │   └── trader_BTCUSDT_2026-03-07.meta.json
+│   └── equities/
+│       └── analyst_SPX_2026-03-05.pine
+├── technology/
+│   └── ai/
+│       └── researcher_2026-03-03_abc12345.meta.json
+├── science/
+│   └── climate/
+│       └── scientist_2026-03-02_def67890.meta.json
+└── other/
+    └── general/
+        └── user_2026-03-01_ghi11223.meta.json
+```
+
+### Pine Script (`.pine`)
+
+Generated Pine Script v6 code, ready to paste into TradingView. Finance bookmarks only.
+
+### Metadata (`.meta.json`)
+
+**All bookmarks** get a `.meta.json` with classification info:
+
+```json
+{
+  "tweet_id": "2030348041346302177",
+  "tweet_url": "https://x.com/user/status/2030348041346302177",
+  "category": "finance",
+  "subcategory": "crypto",
+  "is_finance": true,
+  "confidence": 0.95,
+  "has_visual_data": true,
+  "detected_topic": "crypto",
+  "summary": "BTC breakout with RSI confirmation",
+  "author": "CryptoTrader",
+  "date": "2026-03-07",
+  "image_urls": ["https://pbs.twimg.com/media/..."],
+  "chart_data": {
+    "image_type": "chart",
+    "asset": {"ticker": "BTC", "name": "Bitcoin"},
+    "price_levels": {"current": 42000, "support": [40000], "resistance": [45000]},
+    "indicators": [{"name": "RSI", "value": "28", "signal": "bullish"}]
+  }
+}
+```
+
+Finance `.meta.json` additionally includes: `script_type`, `ticker`, `direction`, `timeframe`, `indicators`, `pattern`, `key_levels`, `rationale`, `validation_passed`, `validation_errors`, `validation_warnings`.
 
 ## SQLite Cache
 
@@ -142,16 +203,19 @@ The pipeline caches results in `cache/bookmarks.db` so bookmarks are never re-pr
 
 | Stage | Column | Cached After |
 |-------|--------|-------------|
-| Classification | `classification_json` | xAI determines finance/non-finance |
+| Classification | `classification_json` | xAI determines category + finance detection |
+| Vision | `chart_data_json` | Claude analyzes chart images |
 | Plan | `plan_json` | Claude creates strategy/indicator plan |
 | Script | `pine_script` | ChatGPT generates Pine Script |
 | Validation | `validation_passed`, `validation_errors` | Validator checks the script |
+| Completion | `completed` | All stages finished for this bookmark |
 
 **Cache behavior:**
-- Fully cached bookmarks skip all API calls (including vision analysis)
+- Completed bookmarks skip all API calls
 - Partially cached bookmarks resume from the last completed stage
-- Non-finance tweets are cached as skipped — never re-classified
+- All bookmarks are cached (not just finance) — category info persists
 - Cache is thread-safe for parallel processing
+- Schema auto-migrates when new columns are added
 
 **Management:**
 
@@ -161,45 +225,9 @@ python3 main.py --clear-cache    # Delete all cached results
 python3 main.py --no-cache       # Disable cache for this run
 ```
 
-## Output Format
-
-### Pine Script (`.pine`)
-
-Generated Pine Script v6 code, ready to paste into TradingView.
-
-### Metadata (`.meta.json`)
-
-```json
-{
-  "tweet_id": "2030348041346302177",
-  "tweet_url": "https://x.com/Bluekurtic/status/2030348041346302177",
-  "script_type": "strategy",
-  "author": "Bluekurtic",
-  "date": "2026-03-07",
-  "ticker": "SPX",
-  "direction": "long",
-  "timeframe": "D",
-  "indicators": ["VIX", "VVIX"],
-  "pattern": null,
-  "key_levels": {"entry": 5770, "stop_loss": 5700},
-  "rationale": "VIX spike historically precedes mean reversion...",
-  "image_urls": ["https://pbs.twimg.com/media/..."],
-  "chart_data": {
-    "image_type": "chart",
-    "asset": {"ticker": "VIX", "name": "Volatility Index"},
-    "price_levels": {"current": 23.37, "support": [20], "resistance": [30]},
-    "indicators": [{"name": "VVIX", "value": "140+", "signal": "bearish"}],
-    "tabular_data": {"headers": [...], "rows": [...]}
-  },
-  "validation_passed": true,
-  "validation_errors": [],
-  "validation_warnings": []
-}
-```
-
 ## Parallel Processing
 
-In `--fetch` mode, bookmarks are processed in parallel (up to 5 workers). Each bookmark runs its own vision analysis + classification + planning + generation pipeline concurrently. Cached bookmarks are detected before any API calls and skipped immediately.
+In `--fetch` mode, bookmarks are processed in parallel (up to 5 workers). Each bookmark runs its own classification + vision analysis + planning + generation pipeline concurrently. Completed bookmarks are detected before any API calls and returned from cache immediately.
 
 ## Project Structure
 
@@ -211,7 +239,7 @@ src/
 │   ├── anthropic_client.py
 │   └── openai_client.py
 ├── classifiers/
-│   └── finance_classifier.py       # Two-phase text→image classifier (xAI)
+│   └── finance_classifier.py       # BookmarkClassifier: category + finance (xAI)
 ├── planners/
 │   └── strategy_planner.py         # Strategy/indicator planning (Claude)
 ├── generators/
@@ -227,13 +255,14 @@ src/
 │   └── x_bookmark_fetcher.py       # X API v2 (auto token refresh)
 ├── prompts/
 │   ├── grok_system_prompt.py       # Pine Script system prompt
-│   ├── classification_prompts.py   # Finance classification prompts
+│   ├── classification_prompts.py   # Category + finance classification prompts
 │   └── planning_prompts.py         # Strategy planning prompt
 ├── console.py                      # Rich console + theme
+├── config.py                       # Centralized configuration defaults
 └── pipeline.py                     # Multi-LLM orchestrator
 main.py                             # CLI entrypoint
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
-tests/                              # 68 unit tests
+tests/                              # 127 unit tests
 ```
 
 ## Security
@@ -246,7 +275,7 @@ A pre-commit hook scans all staged files for leaked secrets (API keys, tokens, P
 python3 -m pytest tests/ -v
 ```
 
-68 unit tests covering all modules: clients, classifier, planner, cache, generator, pipeline, validator, and CLI.
+127 unit tests covering all modules: clients, classifier, planner, cache, generator, pipeline, validator, vision analyzer, and CLI.
 
 ## License
 

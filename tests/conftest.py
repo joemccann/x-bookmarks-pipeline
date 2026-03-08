@@ -16,6 +16,9 @@ def sample_classification():
         confidence=0.95,
         classification_source="text",
         has_trading_pattern=True,
+        has_visual_data=False,
+        category="finance",
+        subcategory="crypto",
         detected_topic="crypto",
         summary="BTC breakout above $42k with RSI confirmation",
         raw_text="BTC breakout above $42k, RSI oversold on 4h. Target $45k, SL $40k",
@@ -51,22 +54,6 @@ def sample_plan():
         tweet_date="2026-03-01",
         raw_tweet_text="BTC breakout above $42k, RSI oversold on 4h. Target $45k, SL $40k",
         chart_description="",
-    )
-
-
-@pytest.fixture
-def non_finance_classification():
-    """A non-finance classification result."""
-    return ClassificationResult(
-        tweet_id="test456",
-        is_finance=False,
-        confidence=0.1,
-        classification_source="none",
-        has_trading_pattern=False,
-        detected_topic="none",
-        summary="Discussion about cooking recipes",
-        raw_text="Just made the best pasta carbonara! Recipe in thread.",
-        image_urls=[],
     )
 
 
