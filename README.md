@@ -148,6 +148,27 @@ python3 main.py --file bookmark.json
 | `--clear-cache` | — | — | Clear all cached results and exit |
 | `--cache-stats` | — | — | Show cache statistics and exit |
 | `--workers` | `-w` | `5` | Max parallel workers |
+| `--daemon` | — | — | Run as polling daemon (inline, for testing) |
+| `--interval` | — | `900` | Daemon poll interval in seconds |
+
+## Daemon Mode
+
+A launchd daemon periodically fetches and processes new bookmarks:
+
+```bash
+# Run inline (for testing)
+python3 main.py --daemon
+python3 main.py --daemon --interval 60
+
+# Install as launchd service
+./service_ctl.sh install     # Copy plist + load
+./service_ctl.sh status      # Show PID, log info
+./service_ctl.sh logs        # tail -f the log file
+./service_ctl.sh stop        # Stop daemon
+./service_ctl.sh uninstall   # Unload + remove plist
+```
+
+Logs go to `~/.local/log/x-bookmarks-pipeline.log`. The daemon skips already-completed bookmarks via the cache.
 
 ## Output Structure
 
@@ -261,7 +282,7 @@ src/
 ├── cache/
 │   └── bookmark_cache.py           # Thread-safe SQLite cache
 ├── fetchers/
-│   └── x_bookmark_fetcher.py       # X API v2 (auto token refresh)
+│   └── x_bookmark_fetcher.py       # X API v2 (auto token refresh, note_tweet + article)
 ├── prompts/
 │   ├── grok_system_prompt.py       # Pine Script system prompt
 │   ├── classification_prompts.py   # Category + finance classification prompts
@@ -270,6 +291,8 @@ src/
 ├── config.py                       # Centralized configuration defaults
 └── pipeline.py                     # Multi-LLM orchestrator
 main.py                             # CLI entrypoint
+service.py                          # launchd polling daemon
+service_ctl.sh                      # Daemon management (install/start/stop/logs)
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
 tests/                              # 141 unit tests
 ```

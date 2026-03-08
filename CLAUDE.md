@@ -53,7 +53,7 @@ src/
 ├── cache/
 │   └── bookmark_cache.py           # SQLite cache (thread-safe, with chart_data + completed tracking)
 ├── fetchers/
-│   └── x_bookmark_fetcher.py       # X API v2 fetcher (auto token refresh)
+│   └── x_bookmark_fetcher.py       # X API v2 fetcher (auto token refresh, note_tweet + article support)
 ├── prompts/
 │   ├── grok_system_prompt.py       # Pine Script generation prompt
 │   ├── classification_prompts.py   # Category + finance classification prompts
@@ -62,6 +62,8 @@ src/
 ├── config.py                       # Centralized configuration defaults
 └── pipeline.py                     # Multi-LLM orchestrator (classify → vision → plan → generate → save)
 main.py                             # CLI entrypoint
+service.py                          # launchd polling daemon
+service_ctl.sh                      # Daemon management (install/start/stop/logs)
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
 ```
 
@@ -87,6 +89,12 @@ python main.py --file example_bookmark.json --no-save
 # Cache management
 python main.py --cache-stats
 python main.py --clear-cache
+
+# Daemon mode (periodic polling)
+python main.py --daemon
+python main.py --daemon --interval 60
+./service_ctl.sh install   # launchd service
+./service_ctl.sh logs      # tail log file
 ```
 
 ## Environment Variables
