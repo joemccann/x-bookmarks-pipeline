@@ -23,6 +23,7 @@ from src.planners.strategy_planner import StrategyPlanner, StrategyPlan, Plannin
 from src.generators.pinescript_generator import PineScriptGenerator, GenerationError
 from src.validators.pinescript_validator import PineScriptValidator, ValidationResult
 from src.cache.bookmark_cache import BookmarkCache
+from src.config import OUTPUT_DIR, CACHE_PATH, MAX_WORKERS
 
 
 @dataclass
@@ -45,9 +46,9 @@ class MultiLLMPipeline:
 
     def __init__(
         self,
-        output_dir: str = "output",
+        output_dir: str | None = None,
         cache_enabled: bool = True,
-        cache_path: str = "cache/bookmarks.db",
+        cache_path: str | None = None,
         xai_api_key: Optional[str] = None,
         anthropic_api_key: Optional[str] = None,
         openai_api_key: Optional[str] = None,
@@ -62,8 +63,8 @@ class MultiLLMPipeline:
             client=_make_openai_client(openai_api_key)
         )
         self.validator = PineScriptValidator()
-        self.cache = BookmarkCache(cache_path) if cache_enabled else None
-        self.output_dir = Path(output_dir)
+        self.cache = BookmarkCache(cache_path or CACHE_PATH) if cache_enabled else None
+        self.output_dir = Path(output_dir or OUTPUT_DIR)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def run(

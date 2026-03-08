@@ -27,6 +27,8 @@ from typing import Optional
 
 import httpx
 
+from src.config import FETCH_TIMEOUT
+
 _X_API_BASE = "https://api.twitter.com/2"
 _TOKEN_URL = "https://api.x.com/2/oauth2/token"
 
@@ -55,11 +57,11 @@ class XBookmarkFetcher:
     def __init__(
         self,
         user_id: Optional[str] = None,
-        timeout: float = 30.0,
+        timeout: float | None = None,
     ) -> None:
         self.access_token = os.environ.get("X_USER_ACCESS_TOKEN", "")
         self.user_id = user_id or os.environ.get("X_USER_ID", "")
-        self.timeout = timeout
+        self.timeout = timeout or FETCH_TIMEOUT
 
         # Refresh credentials (optional — enables auto-renewal)
         self.refresh_token = os.environ.get("X_REFRESH_TOKEN", "")

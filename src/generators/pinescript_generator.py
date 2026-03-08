@@ -25,8 +25,8 @@ class PineScriptGenerator:
         self,
         client: Optional[OpenAIClient] = None,
         api_key: Optional[str] = None,
-        model: str = "gpt-5.4",
-        timeout: float = 120.0,
+        model: str | None = None,
+        timeout: float | None = None,
     ) -> None:
         if client:
             self.client = client

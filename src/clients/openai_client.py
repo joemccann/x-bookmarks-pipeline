@@ -7,9 +7,9 @@ import os
 from typing import Optional
 
 from .base_client import BaseClient, ClientError, LLMResponse
+from src.config import OPENAI_MODEL, API_TIMEOUT
 
 _BASE_URL = "https://api.openai.com/v1"
-_DEFAULT_MODEL = "gpt-5.4"
 
 
 class OpenAIClient(BaseClient):
@@ -18,22 +18,22 @@ class OpenAIClient(BaseClient):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = _DEFAULT_MODEL,
-        timeout: float = 120.0,
+        model: str | None = None,
+        timeout: float | None = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not self.api_key:
             raise ValueError(
                 "OpenAI API key required. Set OPENAI_API_KEY env var or pass api_key=."
             )
-        self.model = model
+        self.model = model or OPENAI_MODEL
         super().__init__(
             base_url=_BASE_URL,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
-            timeout=timeout,
+            timeout=timeout or API_TIMEOUT,
         )
 
     def chat(

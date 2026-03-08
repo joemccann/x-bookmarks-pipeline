@@ -16,6 +16,7 @@ import httpx
 
 from src.clients.anthropic_client import AnthropicClient
 from src.clients.base_client import ClientError
+from src.config import VISION_TIMEOUT
 
 _CHART_ANALYSIS_PROMPT = """
 You are an expert technical analyst and data extraction specialist.
@@ -108,10 +109,10 @@ class ClaudeVisionAnalyzer:
     def __init__(
         self,
         client: Optional[AnthropicClient] = None,
-        timeout: float = 60.0,
+        timeout: float | None = None,
     ) -> None:
         self.client = client or AnthropicClient()
-        self.timeout = timeout
+        self.timeout = timeout or VISION_TIMEOUT
 
     def analyze(self, image_url: str) -> str:
         """

@@ -26,6 +26,7 @@ from rich.rule import Rule
 from src.console import console
 from src.pipeline import MultiLLMPipeline, PipelineResult
 from src.cache.bookmark_cache import BookmarkCache
+from src.config import OUTPUT_DIR, CACHE_PATH, MAX_WORKERS
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +167,10 @@ def main() -> int:
     )
 
     # --- Pipeline options ---
-    parser.add_argument("--output-dir", "-o", default="output", help="Directory for output files.")
+    parser.add_argument("--output-dir", "-o", default=OUTPUT_DIR, help=f"Directory for output files (default: {OUTPUT_DIR}).")
     parser.add_argument("--no-save", action="store_true", help="Print to stdout only.")
     parser.add_argument("--no-vision", action="store_true", help="Skip vision analysis.")
+    parser.add_argument("--workers", "-w", type=int, default=MAX_WORKERS, help=f"Max parallel workers (default: {MAX_WORKERS}).")
 
     # --- Cache options ---
     cache_group = parser.add_argument_group("Cache")
@@ -268,7 +270,7 @@ def main() -> int:
             return i, result, time.time() - t0
 
         # Process all bookmarks in parallel
-        max_workers = min(len(bookmarks), 5)
+        max_workers = min(len(bookmarks), args.workers)
         results: list[tuple[int, PipelineResult, float]] = []
 
         console.print(Rule(f"Processing {len(bookmarks)} bookmarks ({max_workers} workers)", style="cyan"))
