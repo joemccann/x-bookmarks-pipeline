@@ -60,6 +60,7 @@ class MultiLLMPipeline:
         xai_api_key: Optional[str] = None,
         anthropic_api_key: Optional[str] = None,
         openai_api_key: Optional[str] = None,
+        on_meta_saved=None,
     ) -> None:
         self.classifier = BookmarkClassifier(
             text_client=_make_cerebras_client(cerebras_api_key),
@@ -77,6 +78,9 @@ class MultiLLMPipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.vision_enabled = vision_enabled
         self._anthropic_api_key = anthropic_api_key
+        # Optional callback: called with (meta_path: str) after each .meta.json is written.
+        # Zero coupling — pipeline has no knowledge of the trading engine.
+        self._on_meta_saved = on_meta_saved
 
     def run(
         self,
@@ -410,6 +414,12 @@ class MultiLLMPipeline:
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
 
+        if self._on_meta_saved:
+            try:
+                self._on_meta_saved(str(meta_path))
+            except Exception:
+                pass  # hook errors must never break the pipeline
+
         return str(filepath), str(meta_path)
 
     def _save_meta(
@@ -449,6 +459,12 @@ class MultiLLMPipeline:
         }
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
+
+        if self._on_meta_saved:
+            try:
+                self._on_meta_saved(str(meta_path))
+            except Exception:
+                pass  # hook errors must never break the pipeline
 
         return str(meta_path)
 

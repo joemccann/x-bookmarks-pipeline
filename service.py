@@ -37,6 +37,17 @@ from src.pipeline import MultiLLMPipeline, PipelineResult
 from src.fetchers.x_bookmark_fetcher import XBookmarkFetcher, FetchError
 from src.config import OUTPUT_DIR, MAX_WORKERS
 
+# Trading engine hook — indexes each saved .meta.json into signals.db immediately.
+# Imported lazily so service.py works even if trading/ deps aren't installed.
+def _make_index_hook():
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(_PROJECT_DIR / "trading"))
+        from trading.indexer import upsert_one
+        return upsert_one
+    except Exception:
+        return None
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -253,6 +264,7 @@ def run_daemon(
         output_dir=OUTPUT_DIR,
         cache_enabled=True,
         vision_enabled=True,
+        on_meta_saved=_make_index_hook(),
     )
 
     cycle = 0
