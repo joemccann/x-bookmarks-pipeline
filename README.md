@@ -266,6 +266,16 @@ python3 -m pytest tests/ -v
 
 141 unit tests covering all modules: clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, fetcher, and CLI.
 
+### Evaluation Scripts
+
+```bash
+# Compare Cerebras vs xAI Grok classification accuracy/speed — generates reports/cerebras_eval.html
+python3 tests/cerebras_eval.py
+
+# Live X API test: fetch bookmarks and verify note_tweet + entities for article posts
+python3 tests/test_article_live.py
+```
+
 ## License
 
 MIT

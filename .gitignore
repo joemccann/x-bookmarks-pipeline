@@ -143,6 +143,10 @@ output/
 
 # Generated reports
 report.html
+reports/*.html
+
+# macOS
+.DS_Store
 
 # SQLite cache (top-level only, not src/cache/)
 /cache/
