@@ -110,22 +110,26 @@ python3 main.py --file bookmark.json
 
 ## Daemon Mode
 
-A launchd daemon periodically fetches and processes new bookmarks:
+A launchd daemon (`service.py`) polls X every 15 minutes for new bookmarks and runs them through the full pipeline. Already-processed bookmarks are skipped via the SQLite cache.
 
 ```bash
-# Run inline (for testing)
-python3 main.py --daemon
-python3 main.py --daemon --interval 60
+# Install and start (runs at login, auto-restarts on crash)
+./service_ctl.sh install
 
-# Install as launchd service
-./service_ctl.sh install     # Copy plist + load
-./service_ctl.sh status      # Show PID, log info
-./service_ctl.sh logs        # tail -f the log file
+# Management
+./service_ctl.sh status      # Show PID, last exit code, log tail
+./service_ctl.sh logs        # tail -f app log
+./service_ctl.sh logs-all    # tail -f app + stdout + stderr logs
+./service_ctl.sh restart     # Stop + start
 ./service_ctl.sh stop        # Stop daemon
 ./service_ctl.sh uninstall   # Unload + remove plist
+
+# Run inline without launchd (useful for testing)
+python3 main.py --daemon
+python3 main.py --daemon --interval 60
 ```
 
-Logs go to `~/.local/log/x-bookmarks-pipeline.log`. The daemon skips already-completed bookmarks via the cache.
+Logs go to `~/.local/log/x-bookmarks-pipeline.log`. The poll interval is 900 seconds (15 min) and is configurable via the `POLL_INTERVAL` env var.
 
 ## Output Structure
 
