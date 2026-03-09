@@ -60,9 +60,25 @@ src/
 │   └── planning_prompts.py         # Strategy/indicator planning prompt
 ├── console.py                      # Shared Rich console + theme
 ├── config.py                       # Centralized configuration defaults
-└── pipeline.py                     # Multi-LLM orchestrator (classify → vision → plan → generate → save)
-main.py                             # CLI entrypoint
-service.py                          # launchd polling daemon
+└── pipeline.py                     # Multi-LLM orchestrator (on_meta_saved hook for real-time indexing)
+trading/                            # Trading engine (self-contained, extractable)
+├── pyproject.toml                  # Standalone package definition
+└── trading/
+    ├── config.py                   # DB paths, default tickers (SIGNALS_DB_PATH, BOOKMARKS_DB_PATH)
+    ├── db/
+    │   ├── schema.py               # SQLite setup: finance_signals, market_data, signals (WAL mode)
+    │   └── reader.py               # Read-only query helpers
+    ├── fetchers/
+    │   └── market_data.py          # yfinance → market_data table (fetch-to-DB pattern)
+    ├── indicators/
+    │   └── move_psp_spread.py      # MOVE/PSP spread + 90d z-score → signals table
+    ├── strategies/
+    │   └── vix_vvix_mean_reversion.py  # VIX>30+VVIX>125 buy SPY + backtesting.py backtest
+    ├── indexer.py                  # Scan output/finance/ → finance_signals (+ upsert_one hook)
+    └── runner.py                   # Orchestrate index → fetch → indicators → strategies
+trading_main.py                     # Trading engine CLI (index|fetch|run|list|signals)
+main.py                             # Pipeline CLI entrypoint
+service.py                          # launchd polling daemon (wires on_meta_saved → indexer.upsert_one)
 service_ctl.sh                      # Daemon management (install/start/stop/logs)
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
 ```
@@ -72,29 +88,33 @@ auth_pkce.py                        # OAuth 2.0 PKCE token helper
 ```bash
 # Install dependencies
 pip install -r requirements.txt
+pip install backtesting yfinance quantstats pandas-ta-classic  # trading engine extras
 
 # Fetch live bookmarks and process
-python main.py --fetch
-python main.py --fetch --max-results 20
+python3 main.py --fetch
+python3 main.py --fetch --max-results 20
 
 # From inline text
-python main.py --text "BTC breakout above \$42k" --author "handle" --date "2026-03-01"
+python3 main.py --text "BTC breakout above \$42k" --author "handle" --date "2026-03-01"
 
 # From JSON bookmark file
-python main.py --file example_bookmark.json
-
-# Stdout-only (no file save)
-python main.py --file example_bookmark.json --no-save
+python3 main.py --file example_bookmark.json
 
 # Cache management
-python main.py --cache-stats
-python main.py --clear-cache
+python3 main.py --cache-stats
+python3 main.py --clear-cache
 
 # Daemon mode (periodic polling)
-python main.py --daemon
-python main.py --daemon --interval 60
-./service_ctl.sh install   # launchd service
+./service_ctl.sh install   # launchd service (polls every 15 min)
 ./service_ctl.sh logs      # tail log file
+./service_ctl.sh status    # show PID + last exit
+
+# Trading engine
+python3 trading_main.py index              # index output/finance/ → signals.db
+python3 trading_main.py fetch              # fetch market data (VIX, VVIX, MOVE, SPY, PSP)
+python3 trading_main.py run                # run all indicators + strategies
+python3 trading_main.py list --type strategy
+python3 trading_main.py signals --name vix_vvix_mean_reversion
 ```
 
 ## Environment Variables
@@ -204,7 +224,8 @@ Generated scripts must follow these rules (enforced by the system prompt, self-v
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -v
+python3 -m pytest tests/ -v                    # 151 pipeline tests
+cd trading && python3 -m pytest tests/ -v      # 56 trading engine tests
 ```
 
-141 tests covering clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, fetcher (long-form/article support), and CLI.
+207 tests total. The two suites must be run separately (different sys.path roots).

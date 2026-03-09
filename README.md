@@ -219,16 +219,77 @@ python3 main.py --no-cache       # Disable cache for this run
 
 In `--fetch` mode, bookmarks are processed in parallel (up to 5 workers). Each bookmark runs its own classification + vision analysis + planning + generation pipeline concurrently. Completed bookmarks are detected before any API calls and returned from cache immediately.
 
+## Trading Engine
+
+Finance bookmarks are also indexed into a SQLite signals database (`cache/signals.db`) that a separate trading engine reads to run Python-based indicators and strategies.
+
+```bash
+# Index all output/finance/ files into signals.db
+python3 trading_main.py index
+
+# Fetch market data (VIX, VVIX, MOVE, SPY, PSP) from yfinance
+python3 trading_main.py fetch
+
+# Run all indicators + strategies (index → fetch → compute → emit signals)
+python3 trading_main.py run
+
+# List indexed pipeline signals
+python3 trading_main.py list --type strategy
+python3 trading_main.py list --subcategory volatility
+
+# Show emitted indicator/strategy signals
+python3 trading_main.py signals --name vix_vvix_mean_reversion
+```
+
+**Real-time sync:** The daemon's `on_meta_saved` hook calls `indexer.upsert_one()` immediately after each `.meta.json` is written — `signals.db` stays in sync without polling or a file watcher.
+
+### Included Indicator
+
+**MOVE/PSP Spread** (`trading/trading/indicators/move_psp_spread.py`) — Computes the spread between the MOVE bond volatility index and the PSP private equity ETF close, plus a 90-day z-score. Widening spread signals risk-off / credit stress.
+
+### Included Strategy
+
+**VIX/VVIX Mean Reversion** (`trading/trading/strategies/vix_vvix_mean_reversion.py`) — Buys SPY when VIX > 30 AND VVIX > 125 (extreme fear + vol-of-vol spike); exits when VIX drops below 20 or after 13 weeks. Runs a full `backtesting.py` backtest over historical data and emits a live signal for today.
+
+### Architecture
+
+```
+trading/                            # Self-contained package (own pyproject.toml)
+├── trading/
+│   ├── config.py                   # DB paths, default tickers
+│   ├── db/
+│   │   ├── schema.py               # SQLite setup: finance_signals, market_data, signals (WAL)
+│   │   └── reader.py               # Query helpers (read-only)
+│   ├── fetchers/
+│   │   └── market_data.py          # yfinance → market_data table
+│   ├── indicators/
+│   │   └── move_psp_spread.py      # MOVE/PSP spread + z-score
+│   ├── strategies/
+│   │   └── vix_vvix_mean_reversion.py  # VIX>30+VVIX>125 → buy SPY
+│   ├── indexer.py                  # Scan output/finance/ → finance_signals
+│   └── runner.py                   # Orchestrate index→fetch→compute→emit
+└── tests/                          # 56 unit tests
+```
+
+**Extracting to its own repo:** `cp -r trading/ ~/new-repo/` — zero import changes required. The only shared contract is the `signals.db` path (set via `SIGNALS_DB_PATH` env var).
+
+### signals.db Schema
+
+| Table | Purpose | Written By |
+|---|---|---|
+| `finance_signals` | Indexed pipeline output (meta + Pine Script) | `indexer.py` |
+| `market_data` | OHLCV cache from yfinance | `fetchers/market_data.py` |
+| `signals` | Emitted indicator/strategy outputs | indicator/strategy `run()` |
+
 ## Project Structure
 
 ```
-src/
+src/                                # Pipeline source
 ├── clients/                        # LLM API wrappers (httpx, no SDKs)
-│   ├── base_client.py
 │   ├── cerebras_client.py          # Cerebras (fast text classification)
-│   ├── xai_client.py
-│   ├── anthropic_client.py
-│   └── openai_client.py
+│   ├── xai_client.py               # xAI Grok (image classification)
+│   ├── anthropic_client.py         # Claude (vision + planning)
+│   └── openai_client.py            # ChatGPT (Pine Script generation)
 ├── classifiers/
 │   └── finance_classifier.py       # BookmarkClassifier: Cerebras text + xAI vision
 ├── planners/
@@ -236,26 +297,23 @@ src/
 ├── generators/
 │   ├── pinescript_generator.py     # Pine Script generation (ChatGPT)
 │   └── vision_analyzer.py          # Chart image analysis (Claude vision)
-├── parsers/
-│   └── bookmark_parser.py          # Regex-based tweet parser
 ├── validators/
 │   └── pinescript_validator.py     # Static v6 validation
 ├── cache/
 │   └── bookmark_cache.py           # Thread-safe SQLite cache
 ├── fetchers/
 │   └── x_bookmark_fetcher.py       # X API v2 (auto token refresh, note_tweet + article)
-├── prompts/
-│   ├── grok_system_prompt.py       # Pine Script system prompt
-│   ├── classification_prompts.py   # Category + finance classification prompts
-│   └── planning_prompts.py         # Strategy planning prompt
+├── prompts/                        # System prompts for each LLM
 ├── console.py                      # Rich console + theme
 ├── config.py                       # Centralized configuration defaults
-└── pipeline.py                     # Multi-LLM orchestrator
-main.py                             # CLI entrypoint
+└── pipeline.py                     # Multi-LLM orchestrator (on_meta_saved hook)
+trading/                            # Trading engine (see above)
+trading_main.py                     # Trading engine CLI
+main.py                             # Pipeline CLI entrypoint
 service.py                          # launchd polling daemon
 service_ctl.sh                      # Daemon management (install/start/stop/logs)
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
-tests/                              # 141 unit tests
+tests/                              # 151 pipeline unit tests
 ```
 
 ## Security
@@ -265,10 +323,14 @@ A pre-commit hook scans all staged files for leaked secrets (API keys, tokens, P
 ## Tests
 
 ```bash
+# Pipeline tests (151)
 python3 -m pytest tests/ -v
+
+# Trading engine tests (56)
+cd trading && python3 -m pytest tests/ -v
 ```
 
-141 unit tests covering all modules: clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, fetcher, and CLI.
+207 tests total. Pipeline covers: clients (Cerebras, xAI, Anthropic, OpenAI), classifier, planner, cache, generator, pipeline, validator, vision analyzer, fetcher, CLI, and the `on_meta_saved` hook. Trading covers: schema, indexer, reader, market data fetcher, MOVE/PSP indicator, VIX/VVIX strategy.
 
 ### Evaluation Scripts
 
