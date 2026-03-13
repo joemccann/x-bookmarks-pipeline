@@ -9,6 +9,7 @@ Every bookmark gets classified with a `category`/`subcategory` and saved as `.me
 ## Tech Stack
 
 - Python 3.9+
+- Node.js (nodemailer) for email notifications (`scripts/notify.mjs`)
 - `httpx` for HTTP (all LLM API calls — no SDKs)
 - `rich` for CLI output formatting
 - `sqlite3` for bookmark caching
@@ -78,9 +79,14 @@ trading/                            # Trading engine (self-contained, extractabl
     └── runner.py                   # Orchestrate index → fetch → indicators → strategies
 trading_main.py                     # Trading engine CLI (index|fetch|run|list|signals)
 main.py                             # Pipeline CLI entrypoint
-service.py                          # launchd polling daemon (wires on_meta_saved → indexer.upsert_one)
+service.py                          # launchd polling daemon (on_meta_saved hook + email notifications)
 service_ctl.sh                      # Daemon management (install/start/stop/logs)
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
+scripts/
+└── notify.mjs                      # Email notifier (Node.js/nodemailer) — two modes:
+                                    #   --mode error   → token failure alert (sent once per run)
+                                    #   --mode bookmarks → per-cycle digest (JSON via stdin)
+package.json                        # Node.js deps (nodemailer)
 ```
 
 ## Key Commands
@@ -88,6 +94,7 @@ auth_pkce.py                        # OAuth 2.0 PKCE token helper
 ```bash
 # Install dependencies
 pip install -r requirements.txt
+npm install                                                     # nodemailer (email notifications)
 pip install backtesting yfinance quantstats pandas-ta-classic  # trading engine extras
 
 # Fetch live bookmarks and process
@@ -130,6 +137,13 @@ python3 trading_main.py signals --name vix_vvix_mean_reversion
 | `X_REFRESH_TOKEN` | Optional | Auto-refresh expired tokens |
 | `X_CLIENT_ID` | Optional | Required for token refresh |
 | `X_CLIENT_SECRET` | Optional | Required for token refresh |
+| `EMAIL_FROM` | Email notifications | Sender address |
+| `EMAIL_TO` | Email notifications | Recipient address |
+| `SMTP_HOST` | Email notifications | SMTP server (e.g. `smtp.gmail.com`) |
+| `SMTP_PORT` | Email notifications | `587` (TLS) or `465` (SSL) |
+| `SMTP_USER` | Email notifications | SMTP username |
+| `SMTP_PASS` | Email notifications | SMTP password / app password |
+| `NODE_BIN` | Optional | Path to `node` binary (auto-detected if unset) |
 
 ### Optional Config Overrides
 
@@ -214,6 +228,14 @@ Generated scripts must follow these rules (enforced by the system prompt, self-v
 8. No repainting — `barstate.isconfirmed` for entries, explicit `lookahead` on `request.security()`.
 9. ChatGPT runs a 10-point self-validation checklist before returning code.
 10. Output must be a single ` ```pinescript ` fenced block — no prose before/after. Extraction is hardened to recover code from any fence format or raw responses.
+
+## Email Notifications
+
+`service.py` calls `scripts/notify.mjs` via subprocess after each poll cycle. The script is invoked with the Python process's environment (which includes `.env` vars loaded via `python-dotenv`).
+
+- **Token error** (`--mode error`): sends a one-time alert when `X_REFRESH_TOKEN` is invalid. The `_error_notified` flag suppresses repeat alerts every 15 min until the token is fixed and a successful fetch occurs. Detects: `"Token refresh failed"` or `"token was invalid"` in the `FetchError` message.
+- **Bookmark digest** (`--mode bookmarks`): called whenever `poll_once` returns `processed_items` (i.e. `new > 0`). Payload is JSON piped to stdin: `{"bookmarks": [...], "cycle": N}`. Each item carries `author`, `tweet_url`, `text_excerpt`, `is_finance`, `category`, `subcategory`, `plan_title`, `valid`.
+- `_call_notifier()` is fire-and-forget with a 30 s timeout — failures are logged as warnings and never crash the daemon.
 
 ## Security
 

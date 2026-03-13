@@ -18,9 +18,12 @@ project's .env file.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import shutil
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -36,6 +39,76 @@ load_dotenv(_PROJECT_DIR / ".env")
 from src.pipeline import MultiLLMPipeline, PipelineResult
 from src.fetchers.x_bookmark_fetcher import XBookmarkFetcher, FetchError
 from src.config import OUTPUT_DIR, MAX_WORKERS
+
+_SCRIPTS_DIR = _PROJECT_DIR / "scripts"
+
+# ---------------------------------------------------------------------------
+# Email notifications (via Node.js / nodemailer)
+# ---------------------------------------------------------------------------
+
+# Tracks whether a token-error alert has already been sent this session so we
+# don't flood the inbox every 15 minutes while the token stays broken.
+_error_notified: bool = False
+
+
+def _node_bin() -> str | None:
+    """Return the path to the node binary, or None if not found."""
+    from_env = os.environ.get("NODE_BIN")
+    if from_env:
+        return from_env
+    found = shutil.which("node")
+    if found:
+        return found
+    fallback = "/opt/homebrew/bin/node"
+    return fallback if Path(fallback).exists() else None
+
+
+def _call_notifier(args: list[str], stdin_data: str | None = None) -> None:
+    """Invoke scripts/notify.mjs via Node.js, logging the result."""
+    node = _node_bin()
+    if not node:
+        log.warning("notify: node binary not found — skipping email")
+        return
+    script = _SCRIPTS_DIR / "notify.mjs"
+    if not script.exists():
+        log.warning("notify: %s not found — skipping email", script)
+        return
+    try:
+        result = subprocess.run(
+            [node, str(script), *args],
+            input=stdin_data,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            log.info("notify: %s", result.stdout.strip())
+        else:
+            log.warning(
+                "notify: exited %d — %s",
+                result.returncode,
+                (result.stderr or result.stdout).strip(),
+            )
+    except subprocess.TimeoutExpired:
+        log.warning("notify: timed out")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("notify: failed — %s", exc)
+
+
+def _notify_token_error(error_msg: str, cycle: int) -> None:
+    """Send a one-time alert that the X OAuth token is broken."""
+    global _error_notified
+    if _error_notified:
+        return
+    _call_notifier(["--mode", "error", "--message", error_msg, "--cycle", str(cycle)])
+    _error_notified = True
+
+
+def _notify_bookmarks(items: list[dict], cycle: int) -> None:
+    """Send a digest email for all newly processed bookmarks in this cycle."""
+    payload = json.dumps({"bookmarks": items, "cycle": cycle})
+    _call_notifier(["--mode", "bookmarks"], stdin_data=payload)
+
 
 # Trading engine hook — indexes each saved .meta.json into signals.db immediately.
 # Imported lazily so service.py works even if trading/ deps aren't installed.
@@ -118,12 +191,14 @@ def _make_tweet_id(text: str, author: str = "") -> str:
 def poll_once(
     pipeline: MultiLLMPipeline,
     max_results: int = 20,
-) -> dict:
+    cycle: int = 0,
+) -> tuple[dict, list[dict]]:
     """
     Run a single fetch-and-process cycle.
 
-    Returns a summary dict with counts:
-        fetched, new, cached, finance, categorized, failed
+    Returns (stats, processed_items) where stats has counts:
+        fetched, new, cached, finance, categorized, failed, error_type
+    and processed_items is a list of dicts describing each newly processed bookmark.
     """
     stats = {
         "fetched": 0,
@@ -132,7 +207,9 @@ def poll_once(
         "finance": 0,
         "categorized": 0,
         "failed": 0,
+        "error_type": "",
     }
+    processed_items: list[dict] = []
 
     # --- Fetch bookmarks ---
     try:
@@ -140,24 +217,27 @@ def poll_once(
     except ValueError as e:
         log.error("Cannot create fetcher: %s", e)
         stats["failed"] = 1
-        return stats
+        return stats, processed_items
 
     try:
         bookmarks = fetcher.fetch(max_results=max_results)
     except FetchError as e:
-        log.error("Fetch failed: %s", e)
+        error_msg = str(e)
+        log.error("Fetch failed: %s", error_msg)
         stats["failed"] = 1
-        return stats
+        if "Token refresh failed" in error_msg or "token was invalid" in error_msg:
+            stats["error_type"] = "token"
+        return stats, processed_items
     except Exception as e:
         log.error("Unexpected fetch error: %s", e, exc_info=True)
         stats["failed"] = 1
-        return stats
+        return stats, processed_items
 
     stats["fetched"] = len(bookmarks)
 
     if not bookmarks:
         log.info("No bookmarks returned")
-        return stats
+        return stats, processed_items
 
     # --- Process each bookmark ---
     for bm in bookmarks:
@@ -226,6 +306,20 @@ def poll_once(
             if result.meta_path:
                 log.info("  Meta:  %s", result.meta_path)
 
+            # Build item dict for the digest email (skip errored results)
+            if not result.error:
+                cls = result.classification
+                processed_items.append({
+                    "author": bm.author or "unknown",
+                    "tweet_url": tweet_url,
+                    "text_excerpt": bm.text[:220].replace("\n", " "),
+                    "is_finance": bool(cls and cls.is_finance),
+                    "category": cls.category if cls else "",
+                    "subcategory": cls.subcategory if cls else "",
+                    "plan_title": result.plan.title if result.plan else "",
+                    "valid": (result.validation.valid if result.validation else None),
+                })
+
         except Exception as e:
             log.error(
                 "  Unhandled error processing %s: %s",
@@ -233,7 +327,7 @@ def poll_once(
             )
             stats["failed"] += 1
 
-    return stats
+    return stats, processed_items
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +368,7 @@ def run_daemon(
         log.info("--- Poll cycle %d at %s ---", cycle, ts)
 
         t0 = time.time()
-        stats = poll_once(pipeline, max_results=max_results)
+        stats, processed_items = poll_once(pipeline, max_results, cycle=cycle)
         elapsed = time.time() - t0
 
         log.info(
@@ -284,6 +378,21 @@ def run_daemon(
             stats["fetched"], stats["new"], stats["cached"],
             stats["finance"], stats["categorized"], stats["failed"],
         )
+
+        # --- Notifications ---
+        if stats.get("error_type") == "token":
+            _notify_token_error(
+                f"Token refresh failed on poll cycle {cycle}. "
+                "Run `python auth_pkce.py` to re-authenticate.",
+                cycle,
+            )
+        else:
+            # Reset flag so a fresh token error will alert again
+            global _error_notified
+            _error_notified = False
+
+        if processed_items:
+            _notify_bookmarks(processed_items, cycle)
 
         if _shutdown_requested:
             break

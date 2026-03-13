@@ -20,6 +20,7 @@ Four LLMs, each doing what it's best at:
 
 ```bash
 pip install -r requirements.txt
+npm install          # installs nodemailer (email notifications)
 ```
 
 ### 2. Configure
@@ -49,6 +50,18 @@ cp .env.example .env
 | `X_CLIENT_SECRET` | Required for token refresh |
 
 Generate tokens with: `python auth_pkce.py`
+
+**For email notifications (daemon mode):**
+
+| Variable | Purpose |
+|---|---|
+| `EMAIL_FROM` | Sender address (e.g. `pipeline@gmail.com`) |
+| `EMAIL_TO` | Recipient address |
+| `SMTP_HOST` | SMTP server (e.g. `smtp.gmail.com`) |
+| `SMTP_PORT` | SMTP port (`587` for TLS, `465` for SSL) |
+| `SMTP_USER` | SMTP username |
+| `SMTP_PASS` | SMTP password / app password |
+| `NODE_BIN` | Path to `node` binary (optional — auto-detected via `PATH`) |
 
 ### 3. Run
 
@@ -130,6 +143,19 @@ python3 main.py --daemon --interval 60
 ```
 
 Logs go to `~/.local/log/x-bookmarks-pipeline.log`. The poll interval is 900 seconds (15 min) and is configurable via the `POLL_INTERVAL` env var.
+
+### Email Notifications
+
+The daemon sends email alerts automatically via `scripts/notify.mjs` (Node.js / nodemailer):
+
+| Trigger | Subject | Content |
+|---|---|---|
+| X OAuth token expired/invalid | `⚠️ X Bookmarks Pipeline: Token Refresh Failed` | Error details + instructions to run `python auth_pkce.py` |
+| New bookmarks processed | `📌 X Bookmarks: N processed (M finance) — Cycle K` | One card per bookmark: author, category, plan title, VALID/INVALID badge, text excerpt |
+
+Token error alerts are sent **once per failure run** — the alert suppresses itself until the token is fixed and a successful fetch occurs, so you won't be flooded every 15 minutes. Bookmark digests are sent once per cycle whenever `new > 0`.
+
+Requires the `EMAIL_*` and `SMTP_*` env vars above to be set in `.env`.
 
 ## Output Structure
 
@@ -310,9 +336,12 @@ src/                                # Pipeline source
 trading/                            # Trading engine (see above)
 trading_main.py                     # Trading engine CLI
 main.py                             # Pipeline CLI entrypoint
-service.py                          # launchd polling daemon
+service.py                          # launchd polling daemon (email notifications on errors + new bookmarks)
 service_ctl.sh                      # Daemon management (install/start/stop/logs)
 auth_pkce.py                        # OAuth 2.0 PKCE token helper
+scripts/
+└── notify.mjs                      # Email notifier (nodemailer) — called by service.py via subprocess
+package.json                        # Node.js deps (nodemailer)
 tests/                              # 151 pipeline unit tests
 ```
 
