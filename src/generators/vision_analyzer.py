@@ -19,65 +19,8 @@ from src.clients.base_client import ClientError
 from src.config import VISION_TIMEOUT
 
 _CHART_ANALYSIS_PROMPT = """
-You are an expert technical analyst and data extraction specialist.
-
-Analyze this image. It may be a trading chart, a data table, a graph, a
-screenshot with statistics, or another visual format.
-
-Respond with ONLY valid JSON (no markdown fences, no explanation outside the JSON):
-
-{
-  "image_type": "chart" | "table" | "graph" | "screenshot" | "other",
-  "description": "Concise plain-text description of what the image shows",
-  "asset": {
-    "ticker": "detected ticker or empty string",
-    "name": "full asset name if visible"
-  },
-  "chart_analysis": {
-    "timeframe": "e.g. 4h, Daily, Weekly or empty string",
-    "chart_type": "candlestick, line, bar, area, or empty string",
-    "trend_direction": "uptrend, downtrend, ranging, or empty string",
-    "patterns": ["list of chart patterns detected"],
-    "candle_formations": ["notable candle formations at key levels"]
-  },
-  "price_levels": {
-    "current": null,
-    "support": [],
-    "resistance": [],
-    "breakout_zones": [],
-    "all_visible": ["every price number visible on the axis"]
-  },
-  "indicators": [
-    {
-      "name": "indicator name",
-      "value": "current reading if visible",
-      "signal": "bullish, bearish, neutral, or n/a"
-    }
-  ],
-  "drawn_elements": {
-    "trendlines": ["description of each trendline"],
-    "channels": ["description of channels"],
-    "fibonacci_levels": ["fib levels if drawn"],
-    "annotations": ["any text annotations on the image"]
-  },
-  "tabular_data": {
-    "headers": ["column headers if table/grid is present"],
-    "rows": [["row1col1", "row1col2"], ["row2col1", "row2col2"]],
-    "summary": "what the table data represents"
-  },
-  "statistics": {
-    "key_values": {"label": "value"},
-    "summary": "what the statistics represent"
-  }
-}
-
-Rules:
-- Extract EVERY number visible in the image — prices, percentages, dates, counts
-- For charts: be precise with price levels from the Y-axis
-- For tables/grids: extract ALL rows and columns into tabular_data
-- For statistics/dashboards: extract all key-value pairs into statistics
-- Omit empty sections (empty arrays [] and empty objects {} are fine)
-- If a section doesn't apply, use empty defaults ([], {}, null, "")
+ONLY compact JSON (no fences). Fields: image_type,description,asset{ticker,name},chart_analysis{timeframe,chart_type,trend_direction,patterns[]},price_levels{current,support[],resistance[],all_visible[]},indicators[{name,value,signal}],annotations[],tabular_data{headers[],rows[]},statistics{key_values{}}.
+Extract ALL visible numbers. Omit inapplicable fields.
 """.strip()
 
 
@@ -162,7 +105,7 @@ class ClaudeVisionAnalyzer:
             response = self.client.chat(
                 messages=messages,
                 temperature=0.1,
-                max_tokens=4096,
+                max_tokens=1280,
             )
             elapsed = time.time() - t1
             desc = response.content.strip()

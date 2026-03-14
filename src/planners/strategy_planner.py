@@ -64,7 +64,7 @@ class StrategyPlanner:
         ]
 
         try:
-            response = self.client.chat(messages=messages, max_tokens=2048)
+            response = self.client.chat(messages=messages, max_tokens=768)
             plan_data = self._parse_json(response.content)
         except ClientError as e:
             raise PlanningError(f"Planning failed: {e}")
@@ -98,25 +98,17 @@ class StrategyPlanner:
         tweet_date: str,
         chart_description: str,
     ) -> str:
-        parts = [
-            "=== CLASSIFIED TWEET ===",
-            f"Author: @{author}",
-            f"Date: {tweet_date}",
-            f"Topic: {classification.detected_topic}",
-            f"Has Trading Pattern: {classification.has_trading_pattern}",
-            f"Classification Source: {classification.classification_source}",
-            f"\n--- Tweet Text ---\n{classification.raw_text}",
-            f"\n--- Classification Summary ---\n{classification.summary}",
-        ]
+        import json as _json
+        data: dict = {
+            "author": author,
+            "date": tweet_date,
+            "topic": classification.detected_topic,
+            "pattern": classification.has_trading_pattern,
+            "text": classification.raw_text,
+        }
         if chart_description:
-            parts.append(f"\n--- Chart Description ---\n{chart_description}")
-        if classification.image_urls:
-            parts.append(f"\n--- Image URLs ---\n{', '.join(classification.image_urls)}")
-        parts.append(
-            "\nCreate a detailed strategy or indicator plan based on this tweet. "
-            "Respond with valid JSON only."
-        )
-        return "\n".join(parts)
+            data["chart"] = chart_description
+        return _json.dumps(data, separators=(",", ":"))
 
     @staticmethod
     def _parse_json(text: str) -> dict:

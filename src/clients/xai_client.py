@@ -74,6 +74,7 @@ class XAIClient(BaseClient):
         model: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """Send a vision request with text + images."""
         content: list[dict] = [{"type": "text", "text": text_prompt}]
@@ -92,4 +93,5 @@ class XAIClient(BaseClient):
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
+            response_format=response_format,
         )

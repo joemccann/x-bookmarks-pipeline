@@ -42,74 +42,64 @@ class PineScriptGenerator:
             {"role": "user", "content": user_prompt},
         ]
         try:
-            response = self.client.chat(messages=messages, max_tokens=4096)
+            response = self.client.chat(messages=messages, max_tokens=3072)
             return self._extract_pinescript(response.content)
         except ClientError as e:
             raise GenerationError(f"Pine Script generation failed: {e}")
 
     @staticmethod
     def _build_user_prompt(plan: StrategyPlan) -> str:
-        parts: list[str] = []
-        parts.append("=== STRATEGY PLAN ===\n")
-        parts.append(f"Script Type : {plan.script_type}")
-        parts.append(f"Title       : {plan.title}")
-        parts.append(f"Author      : @{plan.author}")
-        parts.append(f"Date        : {plan.tweet_date}")
-        parts.append(f"Ticker      : {plan.ticker}")
-        parts.append(f"Direction   : {plan.direction}")
-        parts.append(f"Timeframe   : {plan.timeframe}")
+        """Build a compact JSON plan for the code generator.
 
+        Sends only the structured plan data — raw tweet text and chart
+        description are omitted because the plan already encodes all
+        relevant information extracted from those fields.
+        """
+        compact: dict = {
+            "type": plan.script_type,
+            "title": plan.title,
+            "author": plan.author,
+            "date": plan.tweet_date,
+            "ticker": plan.ticker,
+            "direction": plan.direction,
+            "timeframe": plan.timeframe,
+        }
         if plan.indicators:
-            parts.append(f"\n--- Indicators ---\n{', '.join(plan.indicators)}")
-
-        if plan.indicator_params:
-            parts.append(f"\n--- Indicator Parameters ---\n{json.dumps(plan.indicator_params, indent=2)}")
-
+            # Merge indicators + params into compact format
+            if plan.indicator_params:
+                ind_parts = []
+                for ind in plan.indicators:
+                    p = plan.indicator_params.get(ind)
+                    if p:
+                        vals = "/".join(str(v) if not isinstance(v, list) else "+".join(str(x) for x in v) for v in p.values())
+                        ind_parts.append(f"{ind}({vals})")
+                    else:
+                        ind_parts.append(ind)
+                compact["ind"] = ",".join(ind_parts)
+            else:
+                compact["indicators"] = plan.indicators
         if plan.entry_conditions:
-            parts.append(f"\n--- Entry Conditions ---")
-            for i, cond in enumerate(plan.entry_conditions, 1):
-                parts.append(f"  {i}. {cond}")
-
+            compact["entry"] = plan.entry_conditions
         if plan.exit_conditions:
-            parts.append(f"\n--- Exit Conditions ---")
-            for i, cond in enumerate(plan.exit_conditions, 1):
-                parts.append(f"  {i}. {cond}")
-
+            compact["exit"] = plan.exit_conditions
         if plan.risk_management:
-            parts.append(f"\n--- Risk Management ---\n{json.dumps(plan.risk_management, indent=2)}")
+            rm = plan.risk_management
+            sl_type = rm.get("stop_loss_type") or rm.get("sl_type", "pct")
+            sl_val = rm.get("stop_loss_value") or rm.get("sl_value", 2)
+            tp_type = rm.get("take_profit_type") or rm.get("tp_type", "pct")
+            tp_val = rm.get("take_profit_value") or rm.get("tp_value", 4)
+            size = rm.get("position_size_pct") or rm.get("size_pct", 10)
+            compact["risk"] = f"SL:{sl_type}@{sl_val},TP:{tp_type}@{tp_val},size:{size}%"
+        # key_levels omitted — risk_management has SL/TP values, entry_conditions has entry logic
+        # pattern omitted — captured in entry_conditions/indicators
+        # rationale omitted — entry/exit conditions capture the logic
 
-        if plan.key_levels:
-            parts.append(f"\n--- Key Price Levels ---\n{json.dumps(plan.key_levels, indent=2)}")
+        prompt = json.dumps(compact, separators=(",", ":"))
 
-        if plan.pattern:
-            parts.append(f"\n--- Chart Pattern ---\n{plan.pattern}")
+        if plan.script_type == "indicator":
+            prompt += "\nUse indicator(), no strategy.* calls."
 
-        if plan.visual_signals:
-            parts.append(f"\n--- Visual Signals ---")
-            for sig in plan.visual_signals:
-                parts.append(f"  - {sig}")
-
-        if plan.rationale:
-            parts.append(f"\n--- Rationale ---\n{plan.rationale}")
-
-        if plan.raw_tweet_text:
-            parts.append(f"\n--- Original Tweet ---\n{plan.raw_tweet_text}")
-
-        if plan.chart_description:
-            parts.append(f"\n--- Chart Description ---\n{plan.chart_description}")
-
-        script_type = plan.script_type
-        parts.append(
-            f"\nGenerate the Pine Script v6 {script_type} now. "
-            f"Follow every rule in your system prompt."
-        )
-        if script_type == "indicator":
-            parts.append(
-                "Use indicator() instead of strategy(). "
-                "Do NOT include strategy.entry/exit/order calls."
-            )
-
-        return "\n".join(parts)
+        return prompt
 
     @staticmethod
     def _extract_pinescript(response: str) -> str:

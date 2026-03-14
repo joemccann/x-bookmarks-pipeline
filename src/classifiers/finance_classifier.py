@@ -126,7 +126,11 @@ class BookmarkClassifier:
             {"role": "user", "content": text},
         ]
         try:
-            response = self.text_client.chat(messages=messages, max_tokens=512)
+            response = self.text_client.chat(
+                messages=messages,
+                max_tokens=192,
+                response_format={"type": "json_object"},
+            )
             return self._parse_json(response.content)
         except ClientError as e:
             raise ClassificationError(f"Text classification failed: {e}")
@@ -136,9 +140,10 @@ class BookmarkClassifier:
         try:
             response = self.vision_client.chat_with_vision(
                 system_prompt=FINANCE_IMAGE_CLASSIFICATION_PROMPT,
-                text_prompt="Analyze these images and classify them.",
+                text_prompt="Classify these images.",
                 image_urls=image_urls,
-                max_tokens=1024,
+                max_tokens=384,
+                response_format={"type": "json_object"},
             )
             return self._parse_json(response.content)
         except ClientError as e:
