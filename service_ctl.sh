@@ -11,6 +11,7 @@
 #   ./service_ctl.sh status      Show daemon status
 #   ./service_ctl.sh logs        Tail the log file
 #   ./service_ctl.sh logs-all    Tail all log files (app + stdout + stderr)
+#   ./service_ctl.sh reauth      Re-run PKCE OAuth flow, update tokens, restart daemon
 #
 
 set -euo pipefail
@@ -151,6 +152,23 @@ cmd_logs() {
     tail -f "${LOG_FILE}"
 }
 
+cmd_reauth() {
+    _yellow "Stopping daemon for re-authentication..."
+    cmd_stop
+    sleep 1
+
+    _yellow "Opening browser for X OAuth PKCE flow..."
+    python3 "${SCRIPT_DIR}/auth_pkce.py"
+
+    if [ $? -ne 0 ]; then
+        _red "Authentication failed — daemon not restarted."
+        exit 1
+    fi
+
+    _green "Authentication successful — restarting daemon..."
+    cmd_start
+}
+
 cmd_logs_all() {
     _ensure_log_dir
     echo "Tailing: ${LOG_FILE}"
@@ -173,8 +191,9 @@ case "${1:-}" in
     status)     cmd_status ;;
     logs)       cmd_logs ;;
     logs-all)   cmd_logs_all ;;
+    reauth)     cmd_reauth ;;
     *)
-        echo "Usage: $0 {install|uninstall|start|stop|restart|status|logs|logs-all}"
+        echo "Usage: $0 {install|uninstall|start|stop|restart|status|logs|logs-all|reauth}"
         exit 1
         ;;
 esac
