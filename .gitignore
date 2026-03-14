@@ -155,3 +155,6 @@ reports/*.html
 __pycache__/
 *.pyc
 .venv/
+
+# Token state (contains live credentials — never commit)
+.token_state.json
