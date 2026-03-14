@@ -15,12 +15,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import http.server
+import json
 import os
+import re
 import secrets
 import sys
 import threading
+import time
 import urllib.parse
 import webbrowser
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -101,6 +105,53 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------------------
+# Token persistence helpers
+# ---------------------------------------------------------------------------
+
+_PROJECT_DIR = Path(__file__).resolve().parent
+_ENV_PATH = _PROJECT_DIR / ".env"
+_TOKEN_STATE_PATH = _PROJECT_DIR / ".token_state.json"
+
+
+def _write_tokens_to_env(access_token: str, refresh_token: str) -> None:
+    """Update X_USER_ACCESS_TOKEN and X_REFRESH_TOKEN in .env in-place."""
+    if not _ENV_PATH.exists():
+        print(f"Note: {_ENV_PATH} not found — skipping auto-save to .env.")
+        return
+    content = _ENV_PATH.read_text()
+    if re.search(r"^X_USER_ACCESS_TOKEN=", content, re.MULTILINE):
+        content = re.sub(
+            r"^X_USER_ACCESS_TOKEN=.*",
+            f"X_USER_ACCESS_TOKEN={access_token}",
+            content, flags=re.MULTILINE,
+        )
+    else:
+        content += f"\nX_USER_ACCESS_TOKEN={access_token}\n"
+    if refresh_token:
+        if re.search(r"^X_REFRESH_TOKEN=", content, re.MULTILINE):
+            content = re.sub(
+                r"^X_REFRESH_TOKEN=.*",
+                f"X_REFRESH_TOKEN={refresh_token}",
+                content, flags=re.MULTILINE,
+            )
+        else:
+            content += f"X_REFRESH_TOKEN={refresh_token}\n"
+    _ENV_PATH.write_text(content)
+    print(f"\u2713 Tokens written to {_ENV_PATH}")
+
+
+def _write_token_state(access_token: str, refresh_token: str, expires_in: int) -> None:
+    """Persist tokens and expiry epoch to .token_state.json."""
+    state = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at": time.time() + expires_in if expires_in else 0,
+    }
+    _TOKEN_STATE_PATH.write_text(json.dumps(state, indent=2))
+    print(f"\u2713 Token state saved to {_TOKEN_STATE_PATH}")
+
+
+# ---------------------------------------------------------------------------
 # Token exchange
 # ---------------------------------------------------------------------------
 
@@ -176,16 +227,18 @@ def main() -> int:
 
     access_token = tokens.get("access_token", "")
     refresh_token = tokens.get("refresh_token", "")
-    expires_in = tokens.get("expires_in", "?")
+    expires_in = tokens.get("expires_in", 0)
 
     print(f"\n{'=' * 60}")
-    print("SUCCESS! Copy this into your .env file:\n")
-    print(f"X_USER_ACCESS_TOKEN={access_token}")
+    print("SUCCESS!")
+    print(f"  access_token : {access_token[:20]}...")
     if refresh_token:
-        print(f"\nRefresh token (save separately — needed to renew):")
-        print(f"X_REFRESH_TOKEN={refresh_token}")
-    print(f"\nToken expires in {expires_in} seconds.")
-    print(f"{'=' * 60}")
+        print(f"  refresh_token: {refresh_token[:20]}...")
+    print(f"  expires_in   : {expires_in}s")
+    print(f"{'=' * 60}\n")
+
+    _write_tokens_to_env(access_token, refresh_token)
+    _write_token_state(access_token, refresh_token, int(expires_in) if expires_in else 0)
 
     return 0
 
