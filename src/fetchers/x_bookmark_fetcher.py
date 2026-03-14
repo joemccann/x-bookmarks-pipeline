@@ -20,7 +20,9 @@ Optional:
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -31,6 +33,14 @@ from src.config import FETCH_TIMEOUT
 
 _X_API_BASE = "https://api.twitter.com/2"
 _TOKEN_URL = "https://api.x.com/2/oauth2/token"
+
+# Project root: src/fetchers/ -> src/ -> project root
+_PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
+_ENV_PATH = _PROJECT_DIR / ".env"
+_TOKEN_STATE_PATH = _PROJECT_DIR / ".token_state.json"
+
+# Proactively refresh this many seconds before the access token expires
+TOKEN_REFRESH_BUFFER = 300
 
 
 class FetchError(Exception):
@@ -79,9 +89,45 @@ class XBookmarkFetcher:
                 "via the PKCE flow at https://console.x.com/"
             )
 
+        # Load expiry + latest tokens from persistent state file
+        self._token_expires_at: float = 0.0
+        self._load_token_state()
+
     @property
     def can_refresh(self) -> bool:
         return bool(self.refresh_token and self.client_id)
+
+    # ------------------------------------------------------------------
+    # Token state persistence
+    # ------------------------------------------------------------------
+
+    def _load_token_state(self) -> None:
+        """Load the latest tokens and expiry time from the state file."""
+        if not _TOKEN_STATE_PATH.exists():
+            return
+        try:
+            state = json.loads(_TOKEN_STATE_PATH.read_text())
+            # State file always holds the most recently rotated tokens
+            if state.get("access_token"):
+                self.access_token = state["access_token"]
+                os.environ["X_USER_ACCESS_TOKEN"] = self.access_token
+            if state.get("refresh_token"):
+                self.refresh_token = state["refresh_token"]
+                os.environ["X_REFRESH_TOKEN"] = self.refresh_token
+            self._token_expires_at = float(state.get("expires_at", 0))
+        except Exception:
+            pass
+
+    def _save_token_state(self, expires_at: float) -> None:
+        """Persist the current tokens and expiry time to the state file."""
+        try:
+            _TOKEN_STATE_PATH.write_text(json.dumps({
+                "access_token": self.access_token,
+                "refresh_token": self.refresh_token,
+                "expires_at": expires_at,
+            }, indent=2))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Public API
@@ -90,8 +136,19 @@ class XBookmarkFetcher:
     def fetch(self, max_results: int = 100) -> list[XBookmark]:
         """
         Fetch up to *max_results* bookmarks, following pagination automatically.
-        Auto-refreshes expired tokens on 401.
+        Proactively refreshes the token before expiry; falls back to reactive
+        refresh on 401.
         """
+        # Proactive refresh: renew the token before it expires
+        if self.can_refresh and self._token_expires_at > 0:
+            time_left = self._token_expires_at - time.time()
+            if time_left < TOKEN_REFRESH_BUFFER:
+                print(
+                    f"  [fetch] Token expires in {max(0, int(time_left))}s "
+                    "— proactively refreshing..."
+                )
+                self._refresh_access_token()
+
         if not self.user_id:
             raise ValueError(
                 "user_id is required. Set X_USER_ID in .env or use "
@@ -197,6 +254,12 @@ class XBookmarkFetcher:
         # Persist to .env file
         self._update_env_file(old_access, new_access, old_refresh, new_refresh)
 
+        # Persist expiry + rotated tokens to state file
+        expires_in = tokens.get("expires_in", 0)
+        expires_at = time.time() + int(expires_in) if expires_in else 0
+        self._token_expires_at = expires_at
+        self._save_token_state(expires_at)
+
         expires = tokens.get("expires_in", "?")
         print(f"  [fetch] Token refreshed (expires in {expires}s)")
 
@@ -206,7 +269,7 @@ class XBookmarkFetcher:
         old_refresh: str, new_refresh: str,
     ) -> None:
         """Update .env file in-place with new tokens."""
-        env_path = Path(".env")
+        env_path = _ENV_PATH
         if not env_path.exists():
             return
 
