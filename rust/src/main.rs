@@ -6,6 +6,7 @@ use x_bookmarks_pipeline_rust::{
     cache::BookmarkCache,
     cli::{self, CliArgs},
     config::AppConfig,
+    fetcher::XBookmarkFetcher,
     llm::{CerebrasProvider, ClaudeProvider, LLMProvider, OpenAIProvider, XaiProvider},
     notify::{EmailConfig, SmtpNotifier},
     orchestrator::{OnMetaSaved, Pipeline},
@@ -76,6 +77,37 @@ async fn main() -> Result<()> {
         Some(BookmarkCache::new(&cfg.cache_path).with_context(|| format!("opening cache {}", cfg.cache_path))?)
     };
 
+    let fetcher = if args.fetch {
+        let token = env_any(&["X_BEARER_TOKEN", "X_ACCESS_TOKEN", "XPB_X_BEARER_TOKEN"])
+            .ok_or_else(|| anyhow::anyhow!("missing required X API bearer token"))?;
+        let user_id = args
+            .fetch_user_id
+            .clone()
+            .or_else(|| env_any(&["X_FETCH_USER_ID", "XPB_X_FETCH_USER_ID"]));
+
+        let endpoint = if let Some(endpoint) = args.fetch_endpoint.clone() {
+            endpoint
+        } else {
+            let resolved_user = user_id.clone().ok_or_else(|| {
+                anyhow::anyhow!("--fetch requires --fetch-user-id or X_FETCH_USER_ID when --fetch-endpoint is not set")
+            })?;
+            format!("https://api.x.com/2/users/{resolved_user}/bookmarks")
+        };
+
+        Some(XBookmarkFetcher::new(
+            endpoint,
+            token,
+            args.fetch_limit.min(100),
+            args.fetch_limit,
+            args.fetch_pages,
+            Client::builder()
+                .timeout(Duration::from_secs(cfg.fetch_timeout.round() as u64))
+                .build()?,
+        ))
+    } else {
+        None
+    };
+
     if args.clear_cache {
         if let Some(cache) = &cache {
             let removed = cache.clear().await?;
@@ -96,7 +128,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let bookmarks = cli::load_bookmarks(&args)?;
+    let bookmarks = if let Some(fetcher) = &fetcher {
+        fetcher.fetch().await?
+    } else {
+        cli::load_bookmarks(&args)?
+    };
     println!("loaded {} bookmarks", bookmarks.len());
 
     if bookmarks.is_empty() {

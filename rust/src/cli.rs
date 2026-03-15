@@ -20,8 +20,20 @@ pub struct CliArgs {
     #[arg(short, long, value_name = "FILE", help = "Load bookmarks from file")]
     pub file: Option<PathBuf>,
 
-    #[arg(long = "fetch", help = "Fetch bookmarks from X API (TODO: implement)")]
+    #[arg(long = "fetch", help = "Fetch bookmarks from X API")]
     pub fetch: bool,
+
+    #[arg(long = "fetch-user-id", value_name = "USER_ID", help = "X user id for bookmark fetch endpoint")]
+    pub fetch_user_id: Option<String>,
+
+    #[arg(long = "fetch-endpoint", value_name = "URL", help = "Override X bookmarks endpoint URL")]
+    pub fetch_endpoint: Option<String>,
+
+    #[arg(long = "fetch-limit", default_value_t = 100, help = "Maximum bookmarks to fetch")]
+    pub fetch_limit: usize,
+
+    #[arg(long = "fetch-pages", default_value_t = 5, help = "Maximum bookmark pages to request")]
+    pub fetch_pages: usize,
 
     #[arg(long = "no-cache", help = "Disable cache reads/writes")]
     pub no_cache: bool,
@@ -58,10 +70,6 @@ impl CliArgs {
 }
 
 pub fn load_bookmarks(args: &CliArgs) -> Result<Vec<Bookmark>> {
-    if args.fetch {
-        return Err(anyhow::anyhow!("--fetch mode is not implemented yet"));
-    }
-
     let mut bookmarks = Vec::new();
     let mut index = 0usize;
 

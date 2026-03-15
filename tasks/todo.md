@@ -41,7 +41,7 @@ Last updated: 2026-03-14
 - [ ] **T5** Bring SQLite cache to parity (tables/columns for classification/vision/plan/script/validation/completion)
   - `depends_on: [T1]`
   - Acceptance: migration test verifies create/open/read/write for all cache stages.
-- [ ] **T4** Implement X fetcher + auth/token handling in Rust
+- [x] **T4** Implement X fetcher + auth/token handling in Rust
   - `depends_on: [T2]`
   - Acceptance: fetcher test covers pagination + error-on-expired token.
 - [ ] **T6** Implement classification stage via `LLMProvider::classify` with cached short-circuit

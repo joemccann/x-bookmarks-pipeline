@@ -302,3 +302,132 @@ impl BookmarkCache {
         })?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(prefix: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|time| time.as_nanos())
+            .unwrap_or(0);
+        path.push(format!("xbp-cache-{prefix}-{nanos}.db"));
+        path
+    }
+
+    fn sample_plan(tweet_id: &str) -> StrategyPlan {
+        StrategyPlan {
+            tweet_id: tweet_id.to_string(),
+            script_type: "strategy".to_string(),
+            title: "Momentum".to_string(),
+            ticker: "BTCUSDT".to_string(),
+            direction: "long".to_string(),
+            timeframe: "D".to_string(),
+            indicators: vec!["ema".to_string()],
+            indicator_params: serde_json::json!({ "ema_length": 21 }),
+            entry_conditions: vec!["cross".to_string()],
+            exit_conditions: vec!["rr".to_string()],
+            risk_management: serde_json::json!({ "stop_loss": 0.01 }),
+            key_levels: serde_json::json!({ "resistance": [30000] }),
+            pattern: Some("breakout".to_string()),
+            visual_signals: vec!["bullish".to_string()],
+            rationale: "Sample plan".to_string(),
+            author: "qa".to_string(),
+            tweet_date: "2026-03-14".to_string(),
+            raw_tweet_text: "Sample text".to_string(),
+            chart_description: "{\"trend\":\"up\"}".to_string(),
+        }
+    }
+
+    fn sample_classification(tweet_id: &str) -> ClassificationResult {
+        ClassificationResult {
+            tweet_id: tweet_id.to_string(),
+            is_finance: true,
+            confidence: 0.98,
+            classification_source: "test".to_string(),
+            has_trading_pattern: true,
+            has_visual_data: false,
+            category: "finance".to_string(),
+            subcategory: "crypto".to_string(),
+            detected_topic: "BTC".to_string(),
+            summary: "Sample classification".to_string(),
+            raw_text: "BTC breakout".to_string(),
+            image_urls: vec!["https://example.com/chart.png".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_roundtrip_classification_plan_script_and_chart() {
+        let path = temp_path("roundtrip");
+        let _ = std::fs::remove_file(&path);
+
+        let cache = BookmarkCache::new(&path).unwrap();
+        let tweet_id = "tweet-1";
+        let classification = sample_classification(tweet_id);
+        let plan = sample_plan(tweet_id);
+
+        cache
+            .save_classification(tweet_id, &classification)
+            .await
+            .unwrap();
+        cache.save_plan(tweet_id, &plan).await.unwrap();
+        cache
+            .save_chart_data(
+                tweet_id,
+                &serde_json::json!({"indicators":["rsi"],"trend":"up"}),
+            )
+            .await
+            .unwrap();
+        cache
+            .save_script(tweet_id, "strategy(\"Demo\")", true, &["ok".to_string()])
+            .await
+            .unwrap();
+
+        let loaded_classification = cache.get_classification(tweet_id).await.unwrap().unwrap();
+        let loaded_plan = cache.get_plan(tweet_id).await.unwrap().unwrap();
+        let loaded_script = cache.get_script(tweet_id).await.unwrap().unwrap();
+        let loaded_chart = cache.get_chart_data(tweet_id).await.unwrap().unwrap();
+        let loaded_row = cache.get(tweet_id).await.unwrap().unwrap();
+        let row_completed = loaded_row.completed;
+
+        assert_eq!(loaded_classification.tweet_id, classification.tweet_id);
+        assert_eq!(loaded_plan.ticker, plan.ticker);
+        assert_eq!(loaded_script, "strategy(\"Demo\")");
+        assert_eq!(
+            loaded_chart.get("indicators").and_then(JsonValue::as_array).unwrap().len(),
+            1
+        );
+        assert!(!row_completed);
+
+        assert!(cache.has_classification(tweet_id).await.unwrap());
+        assert!(cache.has_plan(tweet_id).await.unwrap());
+        assert!(cache.has_script(tweet_id).await.unwrap());
+        assert!(cache.has_chart_data(tweet_id).await.unwrap());
+
+        cache.mark_completed(tweet_id).await.unwrap();
+        assert!(cache.has_completed(tweet_id).await.unwrap());
+
+        let stats = cache.stats().await.unwrap();
+        assert_eq!(stats["total"], serde_json::json!(1));
+        assert_eq!(stats["completed"], serde_json::json!(1));
+
+        let removed = cache.clear().await.unwrap();
+        assert_eq!(removed, 1);
+        let stats_after_clear = cache.stats().await.unwrap();
+        assert_eq!(stats_after_clear["total"], serde_json::json!(0));
+    }
+
+    #[tokio::test]
+    async fn cache_miss_is_none() {
+        let path = temp_path("miss");
+        let _ = std::fs::remove_file(&path);
+
+        let cache = BookmarkCache::new(&path).unwrap();
+        assert!(cache.get_classification("missing").await.unwrap().is_none());
+        assert!(cache.get_script("missing").await.unwrap().is_none());
+        assert!(cache.has_completed("missing").await.unwrap() == false);
+    }
+}

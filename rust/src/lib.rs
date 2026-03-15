@@ -3,6 +3,7 @@ pub mod classifier;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod fetcher;
 pub mod generator;
 pub mod llm;
 pub mod models;

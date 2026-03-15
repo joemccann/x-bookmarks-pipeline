@@ -45,6 +45,11 @@ pub enum PipelineError {
         details: String,
     },
 
+    #[error("authentication token expired: {details}")]
+    TokenExpired {
+        details: String,
+    },
+
     #[error("email notification failed: {details}")]
     Email {
         details: String,
