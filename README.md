@@ -23,27 +23,27 @@ The X Bookmarks Pipeline automates end-to-end processing of X (Twitter) bookmark
 
 ```text
 .
-├── rust/
-│   ├── src/
-│   │   ├── llm.rs         # LLM provider abstraction + implementations
-│   │   ├── cache.rs       # SQLite cache and migration helpers
-│   │   ├── orchestrator.rs # Pipeline orchestration + hooks
-│   │   ├── notify.rs      # Native SMTP notifications
-│   │   ├── error.rs       # PipelineError/structured failures
-│   │   └── ...
-│   ├── Cargo.toml
-│   └── Cargo.lock
+├── Cargo.toml             # Rust crate manifest
+├── Cargo.lock
+├── src/
+│   ├── llm.rs             # LLM provider abstraction + implementations
+│   ├── cache.rs           # SQLite cache and migration helpers
+│   ├── orchestrator.rs    # Pipeline orchestration + hooks
+│   ├── notify.rs          # Native SMTP notifications
+│   ├── error.rs           # PipelineError/structured failures
+│   └── ...
+├── tests/
+│   └── dotenv_bootstrap.rs # CLI integration sanity test
 ├── .env.example
 └── CLAUDE.md
 ```
 
-The runtime entrypoint is `rust/src/main.rs` and all execution is in the `rust/` crate.
+The runtime entrypoint is `src/main.rs` and execution is in this crate root.
 
 ## Setup
 
 ```bash
 cp .env.example .env
-cd rust
 cargo build
 ```
 
@@ -63,7 +63,6 @@ cargo test
 ## Build, test, and run
 
 ```bash
-cd rust
 cargo build
 cargo test
 # one-time execution from text input
@@ -84,7 +83,7 @@ When daemon mode is enabled, per-bookmark notifications are sent from the SMTP n
 cargo run -- --fetch --fetch-user-id <x_user_id>
 
 # process bookmarks from JSON/text file
-cargo run -- --file bookmarks.json
+cargo run -- --file path/to/bookmarks.json
 cargo run -- --text "ETH breakout after key support hold"
 
 # disable external side effects for dry-runs

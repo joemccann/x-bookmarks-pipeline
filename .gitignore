@@ -141,6 +141,9 @@ vite.config.ts.timestamp-*
 # Pipeline output
 output/
 
+# Rust build artifacts
+target/
+
 # Generated reports
 report.html
 reports/*.html

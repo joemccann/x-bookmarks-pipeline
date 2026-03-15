@@ -2,7 +2,7 @@
 
 ## Rust-only architecture
 
-This repository is a Rust implementation of the X bookmark pipeline with shared provider abstractions and a single executable workflow in `rust/src/main.rs`.
+This repository is a Rust implementation of the X bookmark pipeline with shared provider abstractions and a single executable workflow in `src/main.rs`.
 
 - `llm.rs` exposes the shared `LLMProvider` trait (`classify`, `analyze_image`, `generate_code`) and provider wrappers.
 - `cache.rs` owns SQLite persistence with shared mutable access using `Arc<Mutex<Connection>>`.
@@ -15,7 +15,6 @@ This repository is a Rust implementation of the X bookmark pipeline with shared 
 
 ```bash
 cp .env.example .env
-cd rust
 cargo build
 cargo test
 cargo run -- --help
