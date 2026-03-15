@@ -3,6 +3,7 @@ use std::{env, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use clap::Parser;
 use reqwest::Client;
+use serde_json::Value;
 use x_bookmarks_pipeline_rust::{
     cache::BookmarkCache,
     cli::{self, CliArgs},
@@ -47,6 +48,51 @@ fn require_env(name: &str, aliases: &[&str]) -> anyhow::Result<String> {
         .with_context(|| format!("missing required env var {name}"))
 }
 
+fn normalize_x_username(raw: &str) -> String {
+    raw.trim().trim_start_matches('@').trim().to_string()
+}
+
+async fn resolve_fetch_user_id(
+    client: &Client,
+    token: &str,
+    username: &str,
+) -> anyhow::Result<String> {
+    let response = client
+        .get(format!("https://api.x.com/2/users/by/username/{username}"))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    let status = response.status();
+    let payload = response.text().await?;
+
+    if !status.is_success() {
+        return Err(anyhow::anyhow!(
+            "failed to resolve username {username} ({status}): {payload}"
+        ));
+    }
+
+    let body: Value = serde_json::from_str(&payload)?;
+    if let Some(id) = body
+        .get("data")
+        .and_then(|data| data.get("id"))
+        .and_then(Value::as_str)
+    {
+        return Ok(id.to_string());
+    }
+
+    if let Some(message) = body
+        .get("errors")
+        .and_then(Value::as_array)
+        .and_then(|errors| errors.first())
+        .and_then(|error| error.get("message").and_then(Value::as_str))
+    {
+        return Err(anyhow::anyhow!("failed to resolve username {username}: {message}"));
+    }
+
+    Err(anyhow::anyhow!("failed to resolve username {username}: no user id returned"))
+}
+
 fn build_notifier() -> Option<Arc<SmtpNotifier>> {
     match (
         env_any(&["SMTP_HOST", "XPB_SMTP_HOST"]),
@@ -66,15 +112,32 @@ fn build_notifier() -> Option<Arc<SmtpNotifier>> {
     }
 }
 
-fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option<XBookmarkFetcher>> {
+async fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option<XBookmarkFetcher>> {
     if args.fetch || env_flag(&["XPB_FETCH_LOOP", "DAEMON_FETCH"]) {
         let token = env_any(&["X_BEARER_TOKEN", "X_ACCESS_TOKEN", "XPB_X_BEARER_TOKEN"])
             .ok_or_else(|| anyhow::anyhow!("missing required X API bearer token"))?;
 
-        let user_id = args
+        let client = Client::builder()
+            .timeout(Duration::from_secs(cfg.fetch_timeout.round() as u64))
+            .build()?;
+
+        let explicit_user_id = args
             .fetch_user_id
             .clone()
             .or_else(|| env_any(&["X_FETCH_USER_ID", "XPB_X_FETCH_USER_ID"]));
+
+        let user_id = if let Some(user_id) = explicit_user_id {
+            Some(user_id)
+        } else if let Some(username) = args
+            .fetch_username
+            .clone()
+            .or_else(|| env_any(&["X_FETCH_USERNAME", "XPB_X_FETCH_USERNAME"]))
+        {
+            let username = normalize_x_username(&username);
+            Some(resolve_fetch_user_id(&client, &token, &username).await?)
+        } else {
+            None
+        };
 
         let endpoint = args.fetch_endpoint.clone().or_else(|| {
             user_id.map(|resolved_user| {
@@ -82,7 +145,7 @@ fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option<XBook
             })
         }).ok_or_else(|| {
             anyhow::anyhow!(
-                "--fetch requires --fetch-user-id or X_FETCH_USER_ID when --fetch-endpoint is not set"
+                "--fetch requires --fetch-user-id/--fetch-username or X_FETCH_USER_ID/X_FETCH_USERNAME when --fetch-endpoint is not set"
             )
         })?;
 
@@ -92,9 +155,7 @@ fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option<XBook
             args.fetch_limit.min(100),
             args.fetch_limit,
             args.fetch_pages,
-            Client::builder()
-                .timeout(Duration::from_secs(cfg.fetch_timeout.round() as u64))
-                .build()?,
+            client,
         )))
     } else {
         Ok(None)
@@ -215,7 +276,7 @@ async fn main() -> Result<()> {
         .build()?;
 
     let providers = pipeline_providers(shared_http.clone())?;
-    let fetcher = build_fetcher(&args, &cfg)?;
+    let fetcher = build_fetcher(&args, &cfg).await?;
     let notifier = build_notifier();
 
     let hook: OnMetaSaved = Arc::new(|meta_path: &str| {

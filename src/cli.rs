@@ -26,6 +26,9 @@ pub struct CliArgs {
     #[arg(long = "fetch-user-id", value_name = "USER_ID", help = "X user id for bookmark fetch endpoint")]
     pub fetch_user_id: Option<String>,
 
+    #[arg(long = "fetch-username", value_name = "USERNAME", help = "X username for bookmark fetch endpoint (resolved to user id)")]
+    pub fetch_username: Option<String>,
+
     #[arg(long = "fetch-endpoint", value_name = "URL", help = "Override X bookmarks endpoint URL")]
     pub fetch_endpoint: Option<String>,
 

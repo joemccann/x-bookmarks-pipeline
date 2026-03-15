@@ -58,6 +58,7 @@ cargo test
 - Required for end-to-end execution: `CEREBRAS_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
 - Optional notification configuration: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`
 - Optional model/runner configuration: `CEREBRAS_MODEL`, `XAI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `CACHE_PATH`, `MAX_WORKERS`, `API_TIMEOUT`, `VISION_TIMEOUT`, `FETCH_TIMEOUT`, `DEFAULT_TICKER`, `DEFAULT_TIMEFRAME`
+- Optional X fetch configuration: `X_FETCH_USER_ID`, `X_FETCH_USERNAME`, `XPB_X_FETCH_USER_ID`, `XPB_X_FETCH_USERNAME`
 - Optional daemon scheduling configuration: `XPB_DAEMON`, `XPB_DAEMON_INTERVAL_SECONDS`, `XPB_DAEMON_MAX_CYCLES`, `XPB_FETCH_LOOP`
 
 ## Build, test, and run
@@ -79,8 +80,10 @@ When daemon mode is enabled, per-bookmark notifications are sent from the SMTP n
 ## Common usage patterns
 
 ```bash
-# fetch latest bookmarks and process them
+# fetch latest bookmarks and process them (user ID)
 cargo run -- --fetch --fetch-user-id <x_user_id>
+# fetch latest bookmarks and process them (username)
+cargo run -- --fetch --fetch-username joemccann
 
 # process bookmarks from JSON/text file
 cargo run -- --file path/to/bookmarks.json
