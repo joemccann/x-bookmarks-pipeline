@@ -49,7 +49,16 @@ fn parse_bookmarks() -> Vec<Bookmark> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    let mut env_loaded = false;
+    for candidate in [".env", "../.env"] {
+        if dotenvy::from_path(candidate).is_ok() {
+            env_loaded = true;
+            break;
+        }
+    }
+    if !env_loaded {
+        dotenvy::dotenv().ok();
+    }
 
     let shared_http = Client::builder()
         .timeout(Duration::from_secs(30))
