@@ -600,6 +600,29 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn fallback_parses_is_finance_from_partial_provider_payload() {
+        let parsed = parse_classification_response(r#"{"is_finance":true,"confidence":0.91}"#, "tweet-1")
+            .expect("classification should parse from partial payload");
+        assert!(parsed.is_finance);
+        assert_eq!(parsed.tweet_id, "tweet-1");
+        assert_eq!(parsed.category, "other");
+        assert_eq!(parsed.subcategory, "general");
+    }
+
+    #[test]
+    fn fallback_recovers_from_embedded_json_in_text() {
+        let parsed = parse_classification_response(
+            r#"Model says: {"is_finance":true,"category":"finance","has_trading_pattern":true}"#,
+            "tweet-2",
+        )
+        .expect("classification should recover from embedded json payload");
+        assert!(parsed.is_finance);
+        assert_eq!(parsed.tweet_id, "tweet-2");
+        assert_eq!(parsed.category, "finance");
+        assert!(parsed.has_trading_pattern);
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -716,7 +739,10 @@ fn parse_classification_response(
     response: &str,
     tweet_id: &str,
 ) -> Option<ClassificationResult> {
-    let value = parser::parse_chart_json(Some(response))?;
+    let value = parser::parse_chart_json(Some(response)).or_else(|| {
+        extract_json_like(response)
+            .and_then(|json_like| serde_json::from_str::<Value>(json_like).ok())
+    })?;
     let obj = value.as_object()?;
 
     let is_finance = obj.get("is_finance").and_then(|value| value.as_bool())?;
