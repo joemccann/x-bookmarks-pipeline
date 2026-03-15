@@ -34,3 +34,39 @@ Set the following in `.env`:
 
 - No legacy non-Rust runtime/tests/trading modules are tracked.
 - Keep this repo Rust-first; do not reintroduce legacy non-Rust entrypoints.
+
+## Rust parity migration checklist (compact)
+
+- [ ] CLI parity: add subcommands equivalent to legacy entrypoint options (fetch, text, file input, cache controls, output toggles, worker sizing).
+- [ ] X fetcher parity: implement authenticated bookmark polling with refresh/token error handling and optional handle-based user resolution.
+- [ ] Cache parity: verify SQLite schema and cache behaviors match legacy:
+  - classification
+  - vision/chart data
+  - plan
+  - generated script
+  - validation result
+  - completion flags and partial resume
+- [ ] Classification parity:
+  - route text to Cerebras first
+  - vision fallback logic via xAI when non-finance + image content indicates chart signals
+- [ ] Vision/parsing parity:
+  - Claude image path for finance or visual-data bookmarks
+  - chart JSON parsing/normalization and fallback handling
+- [ ] Planning/generation parity:
+  - strategy/indicator plan creation
+  - Pine Script generation with strict validation
+  - retain validation error reporting contract
+- [ ] Persistence parity:
+  - meta output for all bookmarks
+  - `.pine` output for finance-only with same naming/placement conventions
+- [ ] Notification parity:
+  - replace Node path with `SmtpNotifier`
+  - keep one-time token-failure alert behavior and per-cycle bookmark digest semantics
+- [ ] Orchestrator parity:
+  - bounded parallelism
+  - robust `on_meta_saved` hook execution (non-fatal if hook fails)
+- [ ] Daemon/runner parity:
+  - periodic polling flow + process lifecycle/restart model
+  - poll interval + service-level env wiring
+- [ ] Test parity:
+  - recreate key behavior coverage in Rust unit/integration tests (classification, planner, generator, cache hit/miss, hook safety, end-to-end orchestrator)
