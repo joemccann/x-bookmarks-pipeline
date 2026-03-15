@@ -114,8 +114,18 @@ fn build_notifier() -> Option<Arc<SmtpNotifier>> {
 
 async fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option<XBookmarkFetcher>> {
     if args.fetch || env_flag(&["XPB_FETCH_LOOP", "DAEMON_FETCH"]) {
-        let token = env_any(&["X_BEARER_TOKEN", "X_ACCESS_TOKEN", "XPB_X_BEARER_TOKEN"])
-            .ok_or_else(|| anyhow::anyhow!("missing required X API bearer token"))?;
+        let token = env_any(&[
+            "X_BEARER_TOKEN",
+            "X_ACCESS_TOKEN",
+            "X_USER_ACCESS_TOKEN",
+            "XPB_X_BEARER_TOKEN",
+            "XPB_X_USER_ACCESS_TOKEN",
+        ])
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "missing required X API bearer token (set X_BEARER_TOKEN or X_ACCESS_TOKEN or X_USER_ACCESS_TOKEN)"
+            )
+        })?;
 
         let client = Client::builder()
             .timeout(Duration::from_secs(cfg.fetch_timeout.round() as u64))

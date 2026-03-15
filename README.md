@@ -56,6 +56,7 @@ cargo test
 ## Required and optional environment variables
 
 - Required for end-to-end execution: `CEREBRAS_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+- Optional fetch auth configuration: `X_BEARER_TOKEN`, `X_ACCESS_TOKEN`, `X_USER_ACCESS_TOKEN`
 - Optional notification configuration: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`
 - Optional model/runner configuration: `CEREBRAS_MODEL`, `XAI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `CACHE_PATH`, `MAX_WORKERS`, `API_TIMEOUT`, `VISION_TIMEOUT`, `FETCH_TIMEOUT`, `DEFAULT_TICKER`, `DEFAULT_TIMEFRAME`
 - Optional X fetch configuration: `X_FETCH_USER_ID`, `X_FETCH_USERNAME`, `XPB_X_FETCH_USER_ID`, `XPB_X_FETCH_USERNAME`
