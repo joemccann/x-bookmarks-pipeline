@@ -156,7 +156,7 @@ fn load_oauth_client(
         "X_OAUTH_REDIRECT_URI",
         "XPB_X_OAUTH_REDIRECT_URI",
             ])
-            .or_else(|| Some("http://localhost:8765/callback".to_string()))
+            .or_else(|| Some("http://localhost:8080/callback".to_string()))
         })
         .ok_or_else(|| anyhow::anyhow!("missing redirect uri for OAuth flow"))?;
     Ok((client_id, client_secret, redirect_uri))
@@ -515,20 +515,23 @@ async fn exchange_authorization_code(
     client_id: &str,
     client_secret: Option<String>,
 ) -> anyhow::Result<(String, Option<String>)> {
-    let mut form: Vec<(&str, &str)> = vec![
+    let form: Vec<(&str, &str)> = vec![
         ("grant_type", "authorization_code"),
         ("code", code),
         ("redirect_uri", redirect_uri),
         ("client_id", client_id),
         ("code_verifier", verifier),
     ];
-    if let Some(secret) = client_secret.as_deref() {
-        form.push(("client_secret", secret));
-    }
+    let request = if let Some(secret) = client_secret.as_deref() {
+        client
+            .post("https://api.x.com/2/oauth2/token")
+            .basic_auth(client_id, Some(secret))
+            .form(&form)
+    } else {
+        client.post("https://api.x.com/2/oauth2/token").form(&form)
+    };
 
-    let response = client
-        .post("https://api.x.com/2/oauth2/token")
-        .form(&form)
+    let response = request
         .send()
         .await?;
 
