@@ -32,6 +32,7 @@ pub struct Pipeline {
     cache_enabled: bool,
     vision_enabled: bool,
     max_parallel_workers: usize,
+    verbose: bool,
     on_meta_saved: Option<OnMetaSaved>,
 }
 
@@ -57,6 +58,7 @@ impl Pipeline {
             cache_enabled: true,
             vision_enabled: true,
             max_parallel_workers: config.max_workers.max(1),
+            verbose: false,
             on_meta_saved: None,
         }
     }
@@ -71,9 +73,20 @@ impl Pipeline {
         self
     }
 
+    pub fn with_verbose(mut self, enabled: bool) -> Self {
+        self.verbose = enabled;
+        self
+    }
+
     pub fn with_on_meta_saved(mut self, hook: OnMetaSaved) -> Self {
         self.on_meta_saved = Some(hook);
         self
+    }
+
+    fn log(&self, tweet_id: &str, stage: &str, message: &str) {
+        if self.verbose {
+            println!("[{tweet_id}] {stage}: {message}");
+        }
     }
 
     pub async fn run_batch(self: Arc<Self>, bookmarks: Vec<Bookmark>, save: bool) -> Vec<PipelineRunResult> {
@@ -110,15 +123,31 @@ impl Pipeline {
 
     pub async fn run(&self, mut bookmark: Bookmark, save: bool) -> PipelineRunResult {
         let mut result = PipelineRunResult::new(&bookmark.id);
+        self.log(&bookmark.id, "run", "starting pipeline");
 
         if self.cache_enabled {
+            self.log(&bookmark.id, "cache", "cache enabled, checking completed state");
             if let Some(cache) = &self.cache {
                 if let Ok(true) = cache.has_completed(&bookmark.id).await {
+                    self.log(
+                        &bookmark.id,
+                        "cache",
+                        "bookmark marked completed in cache, attempting load",
+                    );
                     if let Ok(cached) = self.load_from_cache(&bookmark.id).await {
+                        self.log(&bookmark.id, "cache", "loaded cached result");
                         return self.finalize(bookmark, cached, save).await;
                     }
+                    self.log(
+                        &bookmark.id,
+                        "cache",
+                        "completed marker present but cache load failed, processing fresh",
+                    );
                 }
             }
+        }
+        if !self.cache_enabled {
+            self.log(&bookmark.id, "cache", "cache disabled");
         }
 
         let classification = match self
@@ -127,26 +156,47 @@ impl Pipeline {
         {
             Ok(value) => value,
             Err(err) => {
+                self.log(&bookmark.id, "classify", &format!("failed: {err}"));
                 let mut validation = ValidationResult::new();
                 validation.fail(format!("Classification failed: {err}"));
                 result.validation = Some(validation);
                 result.error = format!("Classification failed: {err}");
+                self.log(
+                    &bookmark.id,
+                    "run",
+                    &format!("aborting due classification failure: {err}"),
+                );
                 return self.finalize(bookmark, result, save).await;
             }
         };
+        self.log(
+            &bookmark.id,
+            "classify",
+            &format!(
+                "classification complete: is_finance={}, has_visual_data={}, topic={}",
+                classification.is_finance, classification.has_visual_data, classification.detected_topic
+            ),
+        );
 
         let chart_data = self
             .maybe_run_vision(&bookmark, &classification)
             .await
             .unwrap_or(None);
+        self.log(
+            &bookmark.id,
+            "vision",
+            &format!("chart data present={}", chart_data.is_some()),
+        );
 
         result.classification = Some(classification.clone());
         result.chart_data = chart_data.clone();
 
         if classification.is_finance {
+            self.log(&bookmark.id, "planner", "finance bookmark detected, running planner");
             let plan = match self.plan_stage(&bookmark, &classification, chart_data.as_ref()).await {
                 Ok(value) => value,
                 Err(err) => {
+                    self.log(&bookmark.id, "planner", &format!("failed: {err}"));
                     let mut validation = ValidationResult::new();
                     validation.fail(format!("Planning failed: {err}"));
                     result.validation = Some(validation);
@@ -154,6 +204,11 @@ impl Pipeline {
                     if save {
                         let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), None).await;
                     }
+                    self.log(
+                        &bookmark.id,
+                        "run",
+                        &format!("aborting due planning failure: {err}"),
+                    );
                     return self.finalize(bookmark, result, save).await;
                 }
             };
@@ -161,6 +216,7 @@ impl Pipeline {
             let (script, validation) = match self.script_stage(&bookmark, &plan).await {
                 Ok(value) => value,
                 Err(err) => {
+                    self.log(&bookmark.id, "generator", &format!("failed: {err}"));
                     let mut validation = ValidationResult::new();
                     validation.fail(format!("Generation failed: {err}"));
                     result.validation = Some(validation);
@@ -168,6 +224,11 @@ impl Pipeline {
                     if save {
                         let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), Some(&plan)).await;
                     }
+                    self.log(
+                        &bookmark.id,
+                        "run",
+                        &format!("aborting due generation failure: {err}"),
+                    );
                     return self.finalize(bookmark, result, save).await;
                 }
             };
@@ -177,17 +238,38 @@ impl Pipeline {
             result.validation = Some(validation.clone());
 
             if save {
+                self.log(&bookmark.id, "save", "persisting finance outputs");
                 let saved = self
                     .save_finance(&bookmark, &classification, &plan, &script, validation)
                     .await;
                 result.output_path = saved.0;
                 result.meta_path = saved.1;
+                self.log(
+                    &bookmark.id,
+                    "save",
+                    &format!(
+                        "finance outputs persisted: output_path={:?}, meta_path={:?}",
+                        result.output_path, result.meta_path
+                    ),
+                );
             }
         } else if save {
+            self.log(
+                &bookmark.id,
+                "planner",
+                "non-finance bookmark, skipping plan and code generation",
+            );
+            self.log(&bookmark.id, "save", "persisting non-finance metadata");
             let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), None).await;
             result.meta_path = Some(self.meta_path_for_bookmark(&bookmark, &classification));
+            self.log(&bookmark.id, "save", "non-finance metadata persisted");
         }
 
+        self.log(
+            &bookmark.id,
+            "run",
+            &format!("pipeline stage flow complete, finalizing with error={}", result.error.is_empty()),
+        );
         self.finalize(bookmark, result, save).await
     }
 
@@ -198,21 +280,27 @@ impl Pipeline {
         image_urls: Vec<String>,
     ) -> PipelineResult<ClassificationResult> {
         if self.cache_enabled {
+            self.log(tweet_id, "classify", "checking cache");
             if let Some(cache) = &self.cache {
                 if let Ok(Some(classification)) = cache.get_classification(tweet_id).await {
+                    self.log(tweet_id, "classify", "cache hit");
                     return Ok(classification);
                 }
             }
         }
+        self.log(tweet_id, "classify", "cache miss");
 
+        self.log(tweet_id, "classify", "calling classifier provider");
         let classification = self
             .classifier
             .classify(tweet_id.to_string(), text.clone(), image_urls, None)
             .await?;
+        self.log(tweet_id, "classify", "provider response received");
 
         *text = classification.raw_text.clone();
 
         if self.cache_enabled {
+            self.log(tweet_id, "classify", "writing classification into cache");
             if let Some(cache) = &self.cache {
                 let _ = cache.save_classification(tweet_id, &classification).await;
             }
@@ -228,8 +316,14 @@ impl Pipeline {
     ) -> PipelineResult<Option<Value>> {
         if !self.vision_enabled {
             if !bookmark.chart_description.trim().is_empty() {
+                self.log(
+                    &bookmark.id,
+                    "vision",
+                    "vision disabled, using inline chart_description",
+                );
                 return Ok(parse_chart_json(Some(&bookmark.chart_description)));
             }
+            self.log(&bookmark.id, "vision", "vision disabled and no chart description");
             return Ok(None);
         }
 
@@ -239,24 +333,43 @@ impl Pipeline {
 
         if !should_analyze {
             if !bookmark.chart_description.trim().is_empty() {
+                self.log(
+                    &bookmark.id,
+                    "vision",
+                    "using inline chart_description, skipping vision analysis",
+                );
                 return Ok(parse_chart_json(Some(&bookmark.chart_description)));
             }
+            self.log(
+                &bookmark.id,
+                "vision",
+                "no chart analysis needed based on classification and image presence",
+            );
             return Ok(None);
         }
 
         if self.cache_enabled {
+            self.log(&bookmark.id, "vision", "checking chart cache");
             if let Some(cache) = &self.cache {
                 if let Ok(Some(chart_data)) = cache.get_chart_data(&bookmark.id).await {
+                    self.log(&bookmark.id, "vision", "chart cache hit");
                     return Ok(Some(chart_data));
                 }
             }
         }
 
+        self.log(
+            &bookmark.id,
+            "vision",
+            &format!("running vision on {} image(s)", bookmark.image_urls.len()),
+        );
         let raw = self.vision.analyze(&bookmark.image_urls).await?;
         let chart_data = parse_chart_json(Some(&raw));
 
         if let Some(chart) = &chart_data {
+            self.log(&bookmark.id, "vision", "chart data parsed");
             if self.cache_enabled {
+                self.log(&bookmark.id, "vision", "saving chart data to cache");
                 if let Some(cache) = &self.cache {
                     let _ = cache.save_chart_data(&bookmark.id, chart).await;
                 }
@@ -273,13 +386,16 @@ impl Pipeline {
         chart_data: Option<&Value>,
     ) -> PipelineResult<StrategyPlan> {
         if self.cache_enabled {
+            self.log(&bookmark.id, "planner", "checking cached plan");
             if let Some(cache) = &self.cache {
                 if let Ok(Some(plan)) = cache.get_plan(&bookmark.id).await {
+                    self.log(&bookmark.id, "planner", "plan cache hit");
                     return Ok(plan);
                 }
             }
         }
 
+        self.log(&bookmark.id, "planner", "calling planner provider");
         let chart = chart_data
             .and_then(|value| serde_json::to_string(value).ok())
             .unwrap_or_default();
@@ -289,28 +405,55 @@ impl Pipeline {
             .await?;
 
         if self.cache_enabled {
+            self.log(&bookmark.id, "planner", "saving plan to cache");
             if let Some(cache) = &self.cache {
                 let _ = cache.save_plan(&bookmark.id, &plan).await;
             }
         }
+        self.log(
+            &bookmark.id,
+            "planner",
+            &format!(
+                "plan ready: ticker={} script_type={}",
+                plan.ticker, plan.script_type
+            ),
+        );
 
         Ok(plan)
     }
 
     async fn script_stage(&self, bookmark: &Bookmark, plan: &StrategyPlan) -> PipelineResult<(String, ValidationResult)> {
         if self.cache_enabled {
+            self.log(&bookmark.id, "generator", "checking cached script");
             if let Some(cache) = &self.cache {
                 if let Ok(Some(script)) = cache.get_script(&bookmark.id).await {
+                    self.log(&bookmark.id, "generator", "script cache hit");
                     let validation = self.load_validation_from_cache(&bookmark.id).await?;
                     return Ok((script, validation));
                 }
             }
         }
 
+        self.log(&bookmark.id, "generator", "calling code generator");
         let code = self.generator.generate(bookmark, plan).await?;
         let validation = self.validator.validate(&code, &plan.script_type);
+        self.log(
+            &bookmark.id,
+            "validator",
+            &format!(
+                "validation result: valid={}, warnings={}, errors={}",
+                validation.valid,
+                validation.warnings.len(),
+                validation.errors.len()
+            ),
+        );
 
         if self.cache_enabled {
+            self.log(
+                &bookmark.id,
+                "generator",
+                "saving script and validation into cache",
+            );
             if let Some(cache) = &self.cache {
                 let _ = cache
                     .save_script(&bookmark.id, &code, validation.valid, &validation.errors)
@@ -372,22 +515,43 @@ impl Pipeline {
         result: PipelineRunResult,
         save: bool,
     ) -> PipelineRunResult {
+        self.log(
+            &bookmark.id,
+            "finalize",
+            &format!("finalize start: save_enabled={}, error_empty={}", save, result.error.is_empty()),
+        );
         if save && result.error.is_empty() {
             if let Some(meta_path) = result.meta_path.as_deref() {
                 if let Some(hook) = &self.on_meta_saved {
+                    self.log(&bookmark.id, "finalize", "invoking on_meta_saved hook");
                     let _ = hook(meta_path);
                 }
                 if let Some(notifier) = &self.notifier {
+                    self.log(
+                        &bookmark.id,
+                        "finalize",
+                        "sending notification for saved meta path",
+                    );
                     if let Err(err) = notifier.send_meta_saved(meta_path).await {
                         eprintln!("meta notification failed for {meta_path}: {err}");
                     }
                 }
                 if let Some(cache) = &self.cache {
                     if self.cache_enabled {
+                        self.log(&bookmark.id, "finalize", "marking cache completed");
                         let _ = cache.mark_completed(&bookmark.id).await;
                     }
                 }
             }
+        }
+        if save && result.error.is_empty() {
+            self.log(&bookmark.id, "finalize", "finalize complete: success");
+        } else {
+            self.log(
+                &bookmark.id,
+                "finalize",
+                &format!("finalize complete: failed with {}", result.error),
+            );
         }
         result
     }

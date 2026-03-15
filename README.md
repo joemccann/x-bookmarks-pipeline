@@ -79,9 +79,21 @@ cargo run -- --daemon --daemon-interval 300
 
 When daemon mode is enabled, per-bookmark notifications are sent from the SMTP notifier (if configured), and a cycle summary is also sent for each non-empty batch.
 
-## Automatic token refresh
+## Authentication behavior
 
-If X returns an authentication-expired error while fetching bookmarks, the pipeline will automatically request a new access token using your configured refresh credentials and retry the fetch once.
+The CLI validates authentication at startup for every command (except explicit OAuth helper commands `--auth-url` and `--auth-code`).
+
+- If a usable token is present, the run continues.
+- If the token is missing/expired and refresh credentials are available (`X_REFRESH_TOKEN` + `X_CLIENT_ID`), it attempts automatic refresh.
+- If the token is missing/expired and refresh fails (or no refresh credentials are available), it launches the browser OAuth flow automatically and exits with instructions.
+
+To force a fresh token before a run and persist it to `.env`, use:
+
+```bash
+cargo run -- --fetch --fetch-username <username> --reauth
+```
+
+When a `.env` file is present, `--reauth` updates `X_BEARER_TOKEN` (or existing token keys) with the newly issued access token.
 
 ## Common usage patterns
 
@@ -90,6 +102,17 @@ If X returns an authentication-expired error while fetching bookmarks, the pipel
 cargo run -- --fetch --fetch-user-id <x_user_id>
 # fetch latest bookmarks and process them (username)
 cargo run -- --fetch --fetch-username joemccann
+# force token refresh before processing bookmarks
+cargo run -- --fetch --fetch-username joemccann --reauth
+
+# interactive browser reauth when the refresh token is invalid/expired
+# 1) Reauth flow will open your browser automatically
+cargo run -- --auth-url
+# 2) After authorization, exchange the code using the printed verifier
+cargo run -- --auth-code '<code>' --auth-code-verifier '<verifier>'
+
+If your app uses a different OAuth redirect URI:
+cargo run -- --auth-url --auth-redirect-uri 'https://localhost:8765/callback'
 
 # process bookmarks from JSON/text file
 cargo run -- --file path/to/bookmarks.json

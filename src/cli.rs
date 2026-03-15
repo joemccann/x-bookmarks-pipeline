@@ -23,6 +23,24 @@ pub struct CliArgs {
     #[arg(long = "fetch", help = "Fetch bookmarks from X API")]
     pub fetch: bool,
 
+    #[arg(long = "reauth", help = "Refresh the X access token before processing")]
+    pub reauth: bool,
+
+    #[arg(long = "auth-url", help = "Print the X OAuth authorization URL for interactive token reauthentication and exit")]
+    pub auth_url: bool,
+
+    #[arg(long = "auth-code", value_name = "CODE", help = "Exchange an OAuth authorization code for new access/refresh tokens")]
+    pub auth_code: Option<String>,
+
+    #[arg(long = "auth-code-verifier", value_name = "VERIFIER", help = "PKCE verifier used with --auth-code")]
+    pub auth_code_verifier: Option<String>,
+
+    #[arg(
+        long = "auth-redirect-uri",
+        help = "OAuth redirect URI used for --auth-url and --auth-code"
+    )]
+    pub auth_redirect_uri: Option<String>,
+
     #[arg(long = "fetch-user-id", value_name = "USER_ID", help = "X user id for bookmark fetch endpoint")]
     pub fetch_user_id: Option<String>,
 
@@ -61,6 +79,9 @@ pub struct CliArgs {
 
     #[arg(long = "daemon", help = "Run continuously in polling mode")]
     pub daemon: bool,
+
+    #[arg(long = "verbose", help = "Print per-bookmark pipeline-stage logs")]
+    pub verbose: bool,
 
     #[arg(long = "daemon-interval", default_value_t = 300, help = "Polling interval in seconds when --daemon is enabled")]
     pub daemon_interval: u64,
@@ -246,5 +267,32 @@ mod tests {
         let bookmarks = load_bookmarks(&args).unwrap();
         assert_eq!(bookmarks.len(), 2);
         assert_eq!(bookmarks[0].author, "cli");
+    }
+
+    #[test]
+    fn cli_reauth_flag_is_parsed() {
+        let args = CliArgs::parse_from(["x-bookmarks", "--fetch", "--fetch-username", "alice", "--reauth"]);
+        assert!(args.reauth);
+    }
+
+    #[test]
+    fn cli_auth_url_and_auth_code_flags_parse() {
+        let args = CliArgs::parse_from([
+            "x-bookmarks",
+            "--auth-url",
+            "--auth-code",
+            "abc",
+            "--auth-code-verifier",
+            "def",
+            "--auth-redirect-uri",
+            "https://example.com/callback",
+        ]);
+        assert!(args.auth_url);
+        assert_eq!(args.auth_code.as_deref(), Some("abc"));
+        assert_eq!(args.auth_code_verifier.as_deref(), Some("def"));
+        assert_eq!(
+            args.auth_redirect_uri.as_deref(),
+            Some("https://example.com/callback")
+        );
     }
 }
