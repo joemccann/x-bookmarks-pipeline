@@ -70,3 +70,7 @@ Set the following in `.env`:
   - poll interval + service-level env wiring
 - [ ] Test parity:
   - recreate key behavior coverage in Rust unit/integration tests (classification, planner, generator, cache hit/miss, hook safety, end-to-end orchestrator)
+
+## Migration execution plan
+
+See [`tasks/todo.md`](tasks/todo.md) for the issue-sized sprint plan (with dependency graph + acceptance criteria).
