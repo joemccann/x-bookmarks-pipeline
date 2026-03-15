@@ -529,3 +529,408 @@ impl Pipeline {
         dir.join(format!("{stem}.meta.json")).to_string_lossy().to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::BookmarkCache;
+    use crate::error::PipelineError;
+    use crate::llm::LlmFuture;
+    use crate::models::{CodeGenOutput, ImageAnalysisOutput};
+    use std::future::ready;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Clone)]
+    struct MockProvider {
+        classify: ClassificationResult,
+        plan: serde_json::Value,
+        generated_script: String,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        chart_raw: String,
+    }
+
+    impl MockProvider {
+        fn new(classify: ClassificationResult, plan: serde_json::Value, generated_script: impl Into<String>) -> Self {
+            Self {
+                classify,
+                plan,
+                generated_script: generated_script.into(),
+                calls: Arc::new(Mutex::new(Vec::new())),
+                chart_raw: r#"{"trend":"up"}"#.to_string(),
+            }
+        }
+    }
+
+    impl LLMProvider for MockProvider {
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+
+        fn classify<'a>(
+            &'a self,
+            _input: crate::models::ClassificationInput,
+            _system_prompt: &'a str,
+        ) -> LlmFuture<'a, crate::models::ClassificationResult> {
+            self.calls.lock().unwrap().push("classify");
+            Box::pin(ready(Ok(self.classify.clone())))
+        }
+
+        fn analyze_image<'a>(
+            &'a self,
+            _input: crate::models::ImageAnalysisInput,
+            _system_prompt: &'a str,
+        ) -> LlmFuture<'a, ImageAnalysisOutput> {
+            self.calls.lock().unwrap().push("analyze_image");
+            Box::pin(ready(Ok(ImageAnalysisOutput {
+                raw_json: self.chart_raw.clone(),
+                indicators: Vec::new(),
+                notes: Vec::new(),
+            })))
+        }
+
+        fn generate_code<'a>(
+            &'a self,
+            _input: crate::models::CodeGenInput,
+            _system_prompt: &'a str,
+        ) -> LlmFuture<'a, CodeGenOutput> {
+            self.calls.lock().unwrap().push("generate_code");
+            Box::pin(ready(Ok(CodeGenOutput {
+                pine_script: self.generated_script.clone(),
+                confidence: 1.0,
+                notes: vec!["ok".to_string()],
+            })))
+        }
+
+        fn complete_json<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_prompt: &'a str,
+        ) -> LlmFuture<'a, String> {
+            self.calls.lock().unwrap().push("complete_json");
+            Box::pin(ready(Ok(self.plan.to_string())))
+        }
+    }
+
+    impl MockProvider {
+        fn temp_path(prefix: &str) -> PathBuf {
+            let mut path = std::env::temp_dir();
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|time| time.as_nanos())
+                .unwrap_or(0);
+            path.push(format!("xbp-pipe-{prefix}-{nanos}.db"));
+            path
+        }
+
+        fn config(output_dir: impl Into<PathBuf>) -> crate::config::AppConfig {
+            let mut cfg = crate::config::AppConfig::from_env();
+            cfg.output_dir = output_dir.into().to_string_lossy().to_string();
+            cfg
+        }
+    }
+
+    #[tokio::test]
+    async fn run_batch_finance_bookmark_saves_meta_and_marks_completed() {
+        let db = MockProvider::temp_path("run-finance");
+        let _ = std::fs::remove_file(&db);
+        let cache = BookmarkCache::new(&db).unwrap();
+
+        let classification = crate::models::ClassificationResult {
+            tweet_id: "tweet-1".to_string(),
+            is_finance: true,
+            confidence: 0.9,
+            classification_source: "mock".to_string(),
+            has_trading_pattern: true,
+            has_visual_data: true,
+            category: "finance".to_string(),
+            subcategory: "crypto".to_string(),
+            detected_topic: "BTC".to_string(),
+            summary: "sample".to_string(),
+            raw_text: "sample text".to_string(),
+            image_urls: vec!["https://x.com/chart.png".to_string()],
+        };
+
+        let plan = serde_json::json!({
+            "script_type":"strategy",
+            "title":"Demo",
+            "ticker":"BTCUSDT",
+            "direction":"long",
+            "timeframe":"D",
+            "indicators":["ema"],
+            "entry_conditions":["x>0"],
+            "exit_conditions":["x<0"],
+            "risk_management":{},
+            "key_levels":{},
+            "visual_signals":[],
+            "rationale":"r"
+        });
+
+        let provider = Arc::new(MockProvider::new(classification.clone(), plan, "strategy(\"Demo\")\nstrategy.exit(\"E\",\"E\", stop=1, limit=2)"));
+        let mut output = std::env::temp_dir();
+        output.push(format!("xbp-output-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+
+        let pipeline = Arc::new(Pipeline::new(
+            provider.clone(),
+            provider.clone(),
+            provider.clone(),
+            provider,
+            Some(cache.clone()),
+            None,
+            &MockProvider::config(&output),
+        ));
+
+        let bookmark = crate::models::Bookmark {
+            id: "tweet-1".to_string(),
+            text: "BTC breakout".to_string(),
+            author: "alice".to_string(),
+            date: "2026-03-14".to_string(),
+            image_urls: vec!["https://x.com/chart.png".to_string()],
+            tweet_url: "https://x.com/status/1".to_string(),
+            chart_description: String::new(),
+        };
+
+        let _ = std::fs::remove_dir_all(&output);
+
+        let results = pipeline
+            .run_batch(vec![bookmark], true)
+            .await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tweet_id, "tweet-1");
+        assert!(results[0].error.is_empty());
+        assert!(results[0].output_path.is_some());
+        assert!(results[0].meta_path.is_some());
+
+        assert!(cache.has_completed("tweet-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn run_uses_cache_hit_for_completed_bookmark() {
+        let db = MockProvider::temp_path("run-cache");
+        let _ = std::fs::remove_file(&db);
+        let cache = BookmarkCache::new(&db).unwrap();
+        cache
+            .save_classification(
+                "tweet-1",
+                &crate::models::ClassificationResult {
+                    tweet_id: "tweet-1".to_string(),
+                    is_finance: true,
+                    confidence: 0.9,
+                    classification_source: "cache".to_string(),
+                    has_trading_pattern: true,
+                    has_visual_data: false,
+                    category: "finance".to_string(),
+                    subcategory: "crypto".to_string(),
+                    detected_topic: "BTC".to_string(),
+                    summary: "cached".to_string(),
+                    raw_text: "cached text".to_string(),
+                    image_urls: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        cache
+            .save_plan(
+                "tweet-1",
+                &crate::models::StrategyPlan {
+                    tweet_id: "tweet-1".to_string(),
+                    script_type: "strategy".to_string(),
+                    title: "Demo".to_string(),
+                    ticker: "BTCUSDT".to_string(),
+                    direction: "long".to_string(),
+                    timeframe: "D".to_string(),
+                    indicators: Vec::new(),
+                    indicator_params: serde_json::json!({}),
+                    entry_conditions: Vec::new(),
+                    exit_conditions: Vec::new(),
+                    risk_management: serde_json::json!({}),
+                    key_levels: serde_json::json!({}),
+                    pattern: None,
+                    visual_signals: Vec::new(),
+                    rationale: "cached".to_string(),
+                    author: "alice".to_string(),
+                    tweet_date: "2026-03-14".to_string(),
+                    raw_tweet_text: "cached text".to_string(),
+                    chart_description: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        cache.save_script("tweet-1", "strategy(\"Demo\")", true, &[]).await.unwrap();
+        cache.mark_completed("tweet-1").await.unwrap();
+        cache
+            .save_chart_data("tweet-1", &serde_json::json!({"trend":"up"}))
+            .await
+            .unwrap();
+
+        let mut output = std::env::temp_dir();
+        output.push(format!("xbp-output-cache-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+
+        let provider = MockProvider::new(
+            crate::models::ClassificationResult {
+                tweet_id: "tweet-1".to_string(),
+                is_finance: false,
+                confidence: 0.0,
+                classification_source: "mock".to_string(),
+                has_trading_pattern: false,
+                has_visual_data: false,
+                category: "other".to_string(),
+                subcategory: "general".to_string(),
+                detected_topic: String::new(),
+                summary: String::new(),
+                raw_text: String::new(),
+                image_urls: Vec::new(),
+            },
+            serde_json::json!({"script_type":"strategy"}),
+            String::new(),
+        );
+        let provider = Arc::new(provider.clone());
+        let pipeline = Arc::new(Pipeline::new(
+            provider.clone(),
+            provider.clone(),
+            provider.clone(),
+            provider,
+            Some(cache.clone()),
+            None,
+            &MockProvider::config(&output),
+        ));
+
+        let bookmark = crate::models::Bookmark {
+            id: "tweet-1".to_string(),
+            text: "cached path".to_string(),
+            author: "alice".to_string(),
+            date: "2026-03-14".to_string(),
+            image_urls: Vec::new(),
+            tweet_url: "https://x.com/status/1".to_string(),
+            chart_description: String::new(),
+        };
+
+        let results = pipeline.run_batch(vec![bookmark], false).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].cached);
+    }
+
+    #[tokio::test]
+    async fn on_meta_saved_hook_fail_is_non_fatal() {
+        let db = MockProvider::temp_path("run-hook");
+        let _ = std::fs::remove_file(&db);
+        let cache = BookmarkCache::new(&db).unwrap();
+
+        let classification = crate::models::ClassificationResult {
+            tweet_id: "tweet-1".to_string(),
+            is_finance: true,
+            confidence: 0.9,
+            classification_source: "mock".to_string(),
+            has_trading_pattern: true,
+            has_visual_data: false,
+            category: "finance".to_string(),
+            subcategory: "crypto".to_string(),
+            detected_topic: "BTC".to_string(),
+            summary: "sample".to_string(),
+            raw_text: "sample text".to_string(),
+            image_urls: Vec::new(),
+        };
+        let plan = serde_json::json!({
+            "script_type":"strategy",
+            "title":"Demo",
+            "ticker":"BTCUSDT",
+            "direction":"long",
+            "timeframe":"D",
+            "indicators":["ema"],
+            "entry_conditions":["x>0"],
+            "exit_conditions":["x<0"],
+            "risk_management":{},
+            "key_levels":{},
+            "visual_signals":[],
+            "rationale":"r"
+        });
+        let provider = Arc::new(MockProvider::new(
+            classification.clone(),
+            plan,
+            "strategy(\"Demo\")\nstrategy.exit(\"E\", \"L\", stop=1, limit=2)",
+        ));
+
+        let mut out_dir = std::env::temp_dir();
+        out_dir.push(format!("xbp-output-hook-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        let hook = Arc::new(|_path: &str| {
+            Err(PipelineError::Email {
+                details: "hook failed".to_string(),
+            })
+        }) as Arc<dyn Fn(&str) -> Result<(), PipelineError> + Send + Sync>;
+        let pipeline = Arc::new(Pipeline::new(
+            provider.clone(),
+            provider.clone(),
+            provider.clone(),
+            provider,
+            Some(cache.clone()),
+            None,
+            &MockProvider::config(&out_dir),
+        )
+        .with_on_meta_saved(hook));
+
+        let bookmark = crate::models::Bookmark {
+            id: "tweet-1".to_string(),
+            text: "BTC breakout".to_string(),
+            author: "alice".to_string(),
+            date: "2026-03-14".to_string(),
+            image_urls: Vec::new(),
+            tweet_url: "https://x.com/status/1".to_string(),
+            chart_description: String::new(),
+        };
+
+        let results = pipeline.run_batch(vec![bookmark], true).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].error.is_empty());
+        assert!(results[0].meta_path.is_some());
+        assert!(cache.has_completed("tweet-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn run_batch_propagates_run_failures_as_errors_not_panics() {
+        let bad_provider = Arc::new(MockProvider::new(
+            crate::models::ClassificationResult {
+                tweet_id: "tweet-1".to_string(),
+                is_finance: false,
+                confidence: 0.0,
+                classification_source: "mock".to_string(),
+                has_trading_pattern: false,
+                has_visual_data: false,
+                category: "other".to_string(),
+                subcategory: "general".to_string(),
+                detected_topic: String::new(),
+                summary: String::new(),
+                raw_text: String::new(),
+                image_urls: Vec::new(),
+            },
+            serde_json::json!({"script_type":"strategy"}),
+            "strategy(\"Demo\")",
+        ));
+
+        let pipeline = Arc::new(Pipeline::new(
+            bad_provider.clone(),
+            bad_provider.clone(),
+            bad_provider.clone(),
+            bad_provider,
+            None,
+            None,
+            &MockProvider::config(std::env::temp_dir()),
+        ));
+
+        let bookmark = crate::models::Bookmark {
+            id: "tweet-1".to_string(),
+            text: String::new(),
+            author: "alice".to_string(),
+            date: "2026-03-14".to_string(),
+            image_urls: vec!["https://x.com/chart.png".to_string()],
+            tweet_url: "https://x.com/status/1".to_string(),
+            chart_description: String::new(),
+        };
+
+        let results = pipeline.run_batch(vec![bookmark], false).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].error.is_empty());
+    }
+}

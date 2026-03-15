@@ -122,4 +122,28 @@ mod tests {
         let result = PineScriptValidator::new().validate(code, "strategy");
         assert!(!result.valid);
     }
+
+    #[test]
+    fn detect_missing_strategy_exit_for_strategy_scripts() {
+        let code = "//@version=6\nstrategy(\"Demo\")\nplot(1)";
+        let result = PineScriptValidator::new().validate(code, "strategy");
+        assert!(!result.valid);
+        assert!(result.errors.iter().any(|error| error.contains("strategy.exit")));
+    }
+
+    #[test]
+    fn validate_indicator_requires_indicator_declaration() {
+        let code = "//@version=6\nstrategy(\"Demo\")\nplot(1)";
+        let result = PineScriptValidator::new().validate(code, "indicator");
+        assert!(!result.valid);
+        assert!(result.errors.iter().any(|error| error.contains("indicator()")));
+    }
+
+    #[test]
+    fn warn_when_no_visual_signal_functions() {
+        let code = "//@version=6\nstrategy(\"Demo\")\nstrategy.exit(\"e\", \"l\", stop=1, limit=2)";
+        let result = PineScriptValidator::new().validate(code, "strategy");
+        assert!(result.valid);
+        assert!(result.warnings.iter().any(|warn| warn.contains("Visual signals")));
+    }
 }
