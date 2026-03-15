@@ -428,6 +428,11 @@ async fn main() -> Result<()> {
     let mut refresh_config = load_refresh_config();
     let mut fetcher = build_fetcher(&args, &cfg, &mut refresh_config).await?;
     let notifier = build_notifier();
+    if notifier.is_some() {
+        println!("notifications enabled");
+    } else {
+        println!("notifications disabled (set SMTP_HOST/SMTP_USER/SMTP_PASS/SMTP_FROM/SMTP_TO)");
+    }
 
     let hook: OnMetaSaved = Arc::new(|meta_path: &str| {
         println!("meta saved: {meta_path}");

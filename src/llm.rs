@@ -1,4 +1,5 @@
 use crate::error::PipelineError;
+use crate::parser;
 use crate::models::{
     ClassificationInput, ClassificationResult, CodeGenInput, CodeGenOutput, ImageAnalysisInput,
     ImageAnalysisOutput,
@@ -236,6 +237,9 @@ impl LLMProvider for BaseLLMProvider {
             "strategy_hint": input.strategy_hint,
         }))
         .unwrap_or_else(|_| "{}".to_string());
+        let tweet_id = input.tweet_id.clone();
+        let raw_text = input.text.clone();
+        let image_urls = input.image_urls.clone();
 
         Box::pin(async move {
             let text = self
@@ -244,22 +248,15 @@ impl LLMProvider for BaseLLMProvider {
                 .map_err(PipelineError::from)?;
             let mut result = parse_with_fallback::<ClassificationResult>(
                 &text,
-                ClassificationResult {
-                    tweet_id: input.tweet_id,
-                    is_finance: false,
-                    confidence: 0.0,
-                    classification_source: "fallback".to_string(),
-                    has_trading_pattern: false,
-                    has_visual_data: false,
-                    category: "other".to_string(),
-                    subcategory: "general".to_string(),
-                    detected_topic: String::new(),
-                    summary: "fallback parse".to_string(),
-                    raw_text: String::new(),
-                    image_urls: Vec::new(),
-                },
+                fallback_classification_result(&text, &raw_text, &tweet_id, &image_urls),
             )
             .map_err(PipelineError::from)?;
+            if result.raw_text.is_empty() {
+                result.raw_text = raw_text.clone();
+            }
+            if result.image_urls.is_empty() {
+                result.image_urls = image_urls.clone();
+            }
             result.classification_source = if result.classification_source.is_empty() {
                 "provider".to_string()
             } else {
@@ -665,6 +662,181 @@ where
         }
     }
     Ok(fallback)
+}
+
+fn fallback_classification_result(
+    provider_response: &str,
+    raw_text: &str,
+    tweet_id: &str,
+    image_urls: &[String],
+) -> ClassificationResult {
+    if let Some(parsed) = parse_classification_response(provider_response, tweet_id) {
+        return parsed;
+    }
+
+    let mut keywords = classify_finance_keywords(&provider_response);
+    if !keywords {
+        keywords = classify_finance_keywords(raw_text);
+    }
+
+    if keywords || likely_has_chart_mentions(raw_text) {
+        ClassificationResult {
+            tweet_id: tweet_id.to_string(),
+            is_finance: true,
+            confidence: 0.4,
+            classification_source: "heuristic".to_string(),
+            has_trading_pattern: likely_has_pattern_mentions(raw_text),
+            has_visual_data: !image_urls.is_empty(),
+            category: "finance".to_string(),
+            subcategory: "general".to_string(),
+            detected_topic: if keywords { "finance".to_string() } else { String::new() },
+            summary: "fallback heuristic".to_string(),
+            raw_text: raw_text.to_string(),
+            image_urls: image_urls.to_vec(),
+        }
+    } else {
+        ClassificationResult {
+            tweet_id: tweet_id.to_string(),
+            is_finance: false,
+            confidence: 0.0,
+            classification_source: "fallback".to_string(),
+            has_trading_pattern: false,
+            has_visual_data: false,
+            category: "other".to_string(),
+            subcategory: "general".to_string(),
+            detected_topic: String::new(),
+            summary: "fallback parse".to_string(),
+            raw_text: raw_text.to_string(),
+            image_urls: image_urls.to_vec(),
+        }
+    }
+}
+
+fn parse_classification_response(
+    response: &str,
+    tweet_id: &str,
+) -> Option<ClassificationResult> {
+    let value = parser::parse_chart_json(Some(response))?;
+    let obj = value.as_object()?;
+
+    let is_finance = obj.get("is_finance").and_then(|value| value.as_bool())?;
+    let confidence = obj
+        .get("confidence")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0);
+    let has_trading_pattern = obj
+        .get("has_trading_pattern")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let has_visual_data = obj
+        .get("has_visual_data")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    Some(ClassificationResult {
+        tweet_id: tweet_id.to_string(),
+        is_finance,
+        confidence,
+        classification_source: "provider".to_string(),
+        has_trading_pattern,
+        has_visual_data,
+        category: obj
+            .get("category")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("other")
+            .to_string(),
+        subcategory: obj
+            .get("subcategory")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("general")
+            .to_string(),
+        detected_topic: obj
+            .get("detected_topic")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        summary: obj
+            .get("summary")
+            .and_then(|value| value.as_str())
+            .unwrap_or("provider parse fallback")
+            .to_string(),
+        raw_text: String::new(),
+        image_urls: Vec::new(),
+    })
+}
+
+fn classify_finance_keywords(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    let tokens = [
+        "btc",
+        "eth",
+        "crypto",
+        "forex",
+        "stock",
+        "stocks",
+        "spx",
+        "dow",
+        "nasdaq",
+        "rsi",
+        "macd",
+        "sma",
+        "ema",
+        "candlestick",
+        "candles",
+        "chart",
+        "support",
+        "resistance",
+        "breakout",
+        "fibonacci",
+        "options",
+        "call",
+        "put",
+        "ticker",
+        "entry",
+        "exit",
+        "leverage",
+        "long",
+        "short",
+        "fut",
+    ];
+    if tokens.iter().any(|token| normalized.split_whitespace().any(|word| {
+        let normalized_word = word
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+            .to_lowercase();
+        normalized_word == *token
+    })) {
+        return true;
+    }
+
+    normalized.contains("$")
+        && normalized
+            .split_whitespace()
+            .any(|token| token.starts_with('$') && token.len() > 2)
+}
+
+fn likely_has_pattern_mentions(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    normalized.contains("support")
+        || normalized.contains("resistance")
+        || normalized.contains("entry")
+        || normalized.contains("exit")
+        || normalized.contains("take-profit")
+        || normalized.contains("stop loss")
+        || normalized.contains("fibonacci")
+}
+
+fn likely_has_chart_mentions(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    normalized.contains("chart")
+        || normalized.contains("candlestick")
+        || normalized.contains("indicator")
+        || normalized.contains("pattern")
+        || normalized.contains("ema")
+        || normalized.contains("sma")
+        || normalized.contains("rsi")
+        || normalized.contains("macd")
 }
 
 fn parse_image_output(raw: &str) -> ImageAnalysisOutput {

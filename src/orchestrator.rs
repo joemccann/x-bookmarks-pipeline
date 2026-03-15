@@ -378,7 +378,9 @@ impl Pipeline {
                     let _ = hook(meta_path);
                 }
                 if let Some(notifier) = &self.notifier {
-                    let _ = notifier.send_meta_saved(meta_path).await;
+                    if let Err(err) = notifier.send_meta_saved(meta_path).await {
+                        eprintln!("meta notification failed for {meta_path}: {err}");
+                    }
                 }
                 if let Some(cache) = &self.cache {
                     if self.cache_enabled {

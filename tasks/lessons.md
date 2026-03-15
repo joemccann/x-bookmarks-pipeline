@@ -9,3 +9,6 @@
 - Adjusted migration tracking (`tasks/todo.md`) so completed/remaining milestones match verified code/test status.
 - Fixed a daemon notification regression where the cycle runner returned early before entering the loop and skipped per-cycle completion hooks when cache-completed items were processed.
 - Removed migration-centric wording from top-level README and replaced it with product-centric setup/usage documentation.
+- Fixed broken `LLMProvider::classify` fallback path by removing a nonexistent helper call (`with_request_text_clues`) and restoring compile-time correctness.
+- Hardened fallback classification by first attempting a tolerant JSON parse of provider responses, then falling back to token heuristics, preventing all bookmarks from defaulting to non-finance on malformed responses.
+- Added notification-failure logging in `orchestrator` so email delivery regressions in daemon mode are visible without dropping processing flow.
