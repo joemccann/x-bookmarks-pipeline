@@ -156,7 +156,7 @@ fn load_oauth_client(
         "X_OAUTH_REDIRECT_URI",
         "XPB_X_OAUTH_REDIRECT_URI",
             ])
-            .or_else(|| Some("https://localhost:8765/callback".to_string()))
+            .or_else(|| Some("http://localhost:8765/callback".to_string()))
         })
         .ok_or_else(|| anyhow::anyhow!("missing redirect uri for OAuth flow"))?;
     Ok((client_id, client_secret, redirect_uri))
@@ -240,6 +240,9 @@ fn parse_local_redirect(redirect_uri: &str) -> Option<LoopbackRedirect> {
         || redirect_uri.starts_with("https://localhost")
         || redirect_uri.starts_with("http://127.0.0.1")
         || redirect_uri.starts_with("https://127.0.0.1");
+    if is_localhost && redirect_uri.starts_with("https://") {
+        eprintln!("Localhost OAuth callback uses HTTPS in redirect_uri; automatic callback capture will be unavailable.");
+    }
     if is_localhost {
         let (host_port, path) = if let Some((head, tail)) = rest.split_once('/') {
             (head, format!("/{}", tail))

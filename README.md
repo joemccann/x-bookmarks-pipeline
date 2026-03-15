@@ -112,7 +112,7 @@ cargo run -- --auth-url
 cargo run -- --auth-code '<code>' --auth-code-verifier '<verifier>'
 
 If your app uses a different OAuth redirect URI:
-cargo run -- --auth-url --auth-redirect-uri 'https://localhost:8765/callback'
+cargo run -- --auth-url --auth-redirect-uri 'http://localhost:8765/callback'
 
 # process bookmarks from JSON/text file
 cargo run -- --file path/to/bookmarks.json
