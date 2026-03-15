@@ -369,24 +369,9 @@ impl Pipeline {
     async fn finalize(
         &self,
         bookmark: Bookmark,
-        mut result: PipelineRunResult,
+        result: PipelineRunResult,
         save: bool,
     ) -> PipelineRunResult {
-        if let Some(classification) = &result.classification {
-            if save {
-                result.meta_path = result.meta_path.or_else(|| {
-                    Some(if classification.is_finance {
-                        String::new()
-                    } else {
-                        self.meta_path_for_bookmark(
-                            &bookmark,
-                            classification,
-                        )
-                    })
-                });
-            }
-        }
-
         if save && result.error.is_empty() {
             if let Some(meta_path) = result.meta_path.as_deref() {
                 if let Some(hook) = &self.on_meta_saved {
