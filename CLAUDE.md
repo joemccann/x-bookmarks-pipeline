@@ -2,75 +2,70 @@
 
 ## Rust-only architecture
 
-X Bookmarks Pipeline is now maintained as a Rust migration in `rust/`. Only Rust runtime code is tracked in this repository.
+This repository is a Rust implementation of the X bookmark pipeline with shared provider abstractions and a single executable workflow in `rust/src/main.rs`.
 
-- `llm.rs` exposes the shared `LLMProvider` trait (`classify`, `analyze_image`, `generate_code`).
-- `cache.rs` owns SQLite persistence with shared mutable state via `Arc<Mutex<Connection>>`.
-- `orchestrator.rs` coordinates parallel worker execution and `on_meta_saved` side effects.
-- `notify.rs` contains a native `lettre` notifier (`SmtpNotifier`) used by the orchestrator.
-- `error.rs` defines `PipelineError` and keeps retryable/provider/SQLite/validation errors explicit.
-- `main.rs` shows provider wiring and end-to-end startup for Rust execution.
+- `llm.rs` exposes the shared `LLMProvider` trait (`classify`, `analyze_image`, `generate_code`) and provider wrappers.
+- `cache.rs` owns SQLite persistence with shared mutable access using `Arc<Mutex<Connection>>`.
+- `orchestrator.rs` coordinates bounded worker parallelism and `on_meta_saved` side effects.
+- `notify.rs` implements `SmtpNotifier` via `lettre`.
+- `error.rs` centralizes `PipelineError` and conversion of external failures.
+- `main.rs` handles startup, env loading, provider bootstrap, and CLI dispatch.
 
 ## Setup
 
 ```bash
-cd rust
-cp ../.env.example .env # if not already at root
 cp .env.example .env
+cd rust
 cargo build
 cargo test
-cargo run
+cargo run -- --help
 ```
+
+The binary loads `.env` from current directory at startup.
 
 ## Environment
 
-Set the following in `.env`:
+Required API keys:
+- `CEREBRAS_API_KEY`
+- `XAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
 
-- Required API keys: `CEREBRAS_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
-- Required SMTP: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`
-- Optional tuning/model overrides are read in `rust/src/config.rs`
+Optional SMTP notifications:
+- `SMTP_HOST`
+- `SMTP_USER`
+- `SMTP_PASSWORD`
+- `SMTP_FROM`
+- `SMTP_TO`
 
-## Notes for future work
+Optional runtime tuning:
+- `CEREBRAS_MODEL`
+- `XAI_MODEL`
+- `ANTHROPIC_MODEL`
+- `OPENAI_MODEL`
+- `CACHE_PATH`
+- `MAX_WORKERS`
+- `API_TIMEOUT`
+- `VISION_TIMEOUT`
+- `FETCH_TIMEOUT`
 
-- No legacy non-Rust runtime/tests/trading modules are tracked.
-- Keep this repo Rust-first; do not reintroduce legacy non-Rust entrypoints.
+## Notes
 
-## Rust parity migration checklist (compact)
+- No Python/Node runtime modules are tracked in this repo.
+- SMTP is optional; missing SMTP values disable notifier setup cleanly.
+- Keep changes focused to Rust-first execution and avoid reintroducing legacy non-Rust entrypoints.
 
-- [ ] CLI parity: add subcommands equivalent to legacy entrypoint options (fetch, text, file input, cache controls, output toggles, worker sizing).
-- [ ] X fetcher parity: implement authenticated bookmark polling with refresh/token error handling and optional handle-based user resolution.
-- [ ] Cache parity: verify SQLite schema and cache behaviors match legacy:
-  - classification
-  - vision/chart data
-  - plan
-  - generated script
-  - validation result
-  - completion flags and partial resume
-- [ ] Classification parity:
-  - route text to Cerebras first
-  - vision fallback logic via xAI when non-finance + image content indicates chart signals
-- [ ] Vision/parsing parity:
-  - Claude image path for finance or visual-data bookmarks
-  - chart JSON parsing/normalization and fallback handling
-- [ ] Planning/generation parity:
-  - strategy/indicator plan creation
-  - Pine Script generation with strict validation
-  - retain validation error reporting contract
-- [ ] Persistence parity:
-  - meta output for all bookmarks
-  - `.pine` output for finance-only with same naming/placement conventions
-- [ ] Notification parity:
-  - replace Node path with `SmtpNotifier`
-  - keep one-time token-failure alert behavior and per-cycle bookmark digest semantics
-- [ ] Orchestrator parity:
-  - bounded parallelism
-  - robust `on_meta_saved` hook execution (non-fatal if hook fails)
-- [ ] Daemon/runner parity:
-  - periodic polling flow + process lifecycle/restart model
-  - poll interval + service-level env wiring
-- [ ] Test parity:
-  - recreate key behavior coverage in Rust unit/integration tests (classification, planner, generator, cache hit/miss, hook safety, end-to-end orchestrator)
+## Migration checklist (compact)
 
-## Migration execution plan
+- [x] CLI parity for text/file/cache/snapshot execution modes.
+- [x] X fetcher input path and token-expiry handling.
+- [x] Cache read/write paths for classification, plan, script, validation, chart data, completion.
+- [x] Classification + vision branch coverage with cache short-circuits.
+- [x] Planning and generation pipeline with Pine Script validation.
+- [x] Native `lettre` notifier integration.
+- [x] Bounded orchestrator concurrency.
+- [x] Non-fatal `on_meta_saved` callback behavior.
+- [ ] Daemon/runner lifecycle parity (periodic poll + graceful stop) not yet implemented.
+- [x] Tests for unit + integration behavior.
 
-See [`tasks/todo.md`](tasks/todo.md) for the issue-sized sprint plan (with dependency graph + acceptance criteria).
+See `tasks/todo.md` for current execution plan and open items.

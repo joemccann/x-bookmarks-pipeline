@@ -1,6 +1,6 @@
 # Rust Migration Sprint Plan
 
-Last updated: 2026-03-14
+Last updated: 2026-03-15
 
 ## Dependency graph
 
@@ -38,40 +38,40 @@ Last updated: 2026-03-14
 
 ### Milestone B — Data Plane (Issue 102)
 
-- [ ] **T5** Bring SQLite cache to parity (tables/columns for classification/vision/plan/script/validation/completion)
+- [x] **T5** Bring SQLite cache to parity (tables/columns for classification/vision/plan/script/validation/completion)
   - `depends_on: [T1]`
   - Acceptance: migration test verifies create/open/read/write for all cache stages.
 - [x] **T4** Implement X fetcher + auth/token handling in Rust
   - `depends_on: [T2]`
   - Acceptance: fetcher test covers pagination + error-on-expired token.
-- [ ] **T6** Implement classification stage via `LLMProvider::classify` with cached short-circuit
+- [x] **T6** Implement classification stage via `LLMProvider::classify` with cached short-circuit
   - `depends_on: [T2, T5, T4]`
   - Acceptance: cached + fresh classification paths both covered by tests.
-- [ ] **T7** Implement vision stage with cache-aware chart JSON synthesis
+- [x] **T7** Implement vision stage with cache-aware chart JSON synthesis
   - `depends_on: [T2, T5, T4]`
   - Acceptance: no-image/empty vision paths do not call analyzer; cached chart paths skip provider.
-- [ ] **T8** Implement planning stage and structured plan persistence
+- [x] **T8** Implement planning stage and structured plan persistence
   - `depends_on: [T2, T5]`
   - Acceptance: valid finance flow persists plan and rejects invalid plan payloads.
-- [ ] **T9** Implement Pine Script generation stage (`generate_code`) from plan
+- [x] **T9** Implement Pine Script generation stage (`generate_code`) from plan
   - `depends_on: [T2, T5, T8]`
   - Acceptance: output always contains Pine v6 script block and expected metadata fields.
-- [ ] **T10** Integrate Pine Script validator with explicit failure diagnostics
+- [x] **T10** Integrate Pine Script validator with explicit failure diagnostics
   - `depends_on: [T9]`
   - Acceptance: failing scripts return structured validation errors and set `validation_passed=false`.
-- [ ] **T11** Persist outputs (finance `.pine`, `.meta.json` for all, naming/location)
+- [x] **T11** Persist outputs (finance `.pine`, `.meta.json` for all, naming/location)
   - `depends_on: [T5, T10]`
   - Acceptance: parity check validates directory/file names and JSON fields.
 
 ### Milestone C — Orchestration & Side Effects (Issue 103)
 
-- [ ] **T12** Enforce `on_meta_saved` hook contract and non-fatal error behavior
+- [x] **T12** Enforce `on_meta_saved` hook contract and non-fatal error behavior
   - `depends_on: [T11]`
   - Acceptance: hook panic/Err must not fail final result return.
-- [ ] **T13** Implement native notification parity using `SmtpNotifier`
+- [x] **T13** Implement native notification parity using `SmtpNotifier`
   - `depends_on: [T1, T12]`
   - Acceptance: token-failure and bookmark-digest send paths available behind config gates.
-- [ ] **T14** Wire orchestrator pipeline with bounded worker concurrency
+- [x] **T14** Wire orchestrator pipeline with bounded worker concurrency
   - `depends_on: [T6, T7, T8, T9, T10, T11, T12]`
   - Acceptance: run_batch processes N items with worker cap and preserves ordering policy.
 - [ ] **T15** Implement periodic polling runner/daemon behavior
@@ -85,4 +85,4 @@ Last updated: 2026-03-14
   - Acceptance: test categories for cache hit/miss, failure propagation, hook resilience, and end-to-end happy-path.
 - [ ] **T17** Run final parity verification and documentation freeze
   - `depends_on: [T14, T13, T15, T16]`
-  - Acceptance: `cargo test` passes, migration README and `CLAUDE.md` align, and runbook for deploy/recovery is complete.
+  - Acceptance: `cargo test` passes, migration docs align, and runbook for deploy/recovery is updated.

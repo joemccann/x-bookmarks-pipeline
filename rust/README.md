@@ -1,113 +1,99 @@
-# Rust Migration Boilerplate: X Bookmarks Pipeline
+# Rust Migration: X Bookmarks Pipeline
 
-This folder contains an initial Rust implementation of the core pipeline services:
+This crate is the Rust implementation of the X bookmark ingestion, classification, and Pine Script generation pipeline.
 
-- unified multi-provider LLM abstraction
-- structured error model with `thiserror`
-- async pipeline orchestration with `tokio::task`
-- native email notifications using `lettre`
-- thread-safe cache using `rusqlite` and `Arc<Mutex<Connection>>`
+## Architecture
 
-## Crate layout
+- `llm.rs`
+  - `LLMProvider` trait (`classify`, `analyze_image`, `generate_code`)
+  - shared request/response flow for:
+    - `CerebrasProvider`
+    - `XaiProvider`
+    - `ClaudeProvider`
+    - `OpenAIProvider`
 
-- `rust/src/error.rs`  
-  Central `PipelineError` enum and `PipelineResult<T>` alias.
-- `rust/src/models.rs`  
-  Pipeline domain models: `Bookmark`, `ClassificationOutput`, `ImageAnalysisOutput`, `CodeGenOutput`, `BookmarkMeta`, `FinalScript`.
-- `rust/src/llm.rs`  
-  `LLMProvider` trait and adapters for `Cerebras`, `xAI`, `Claude`, `OpenAI`.
-- `rust/src/cache.rs`  
-  SQLite cache wrapper with `Arc<Mutex<Connection>>`, `get`, `upsert`.
-- `rust/src/notify.rs`  
-  Native `SmtpNotifier` replacement for the old Node notifier using `lettre`.
-- `rust/src/orchestrator.rs`  
-  `Pipeline` orchestrator with bounded parallelism + `on_meta_saved` hook.
-- `rust/src/main.rs`  
-  Bootstrap example showing single provider instances and dependency wiring.
+- `cache.rs`
+  - thread-safe SQLite cache with `Arc<Mutex<Connection>>`
+  - stores classification, plan, script, validation metadata, chart data, and completion flags
 
-## 1) Unified LLM interface
+- `planner.rs`
+  - JSON plan parsing with defaults and fallback behavior
 
-All providers implement one trait:
+- `generator.rs`
+  - Pine Script generation and version normalization
 
-```rust
-pub trait LLMProvider: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn classify<'a>(&'a self, input: ClassificationInput) -> LlmFuture<'a, ClassificationOutput>;
-    fn analyze_image<'a>(&'a self, input: ImageAnalysisInput) -> LlmFuture<'a, ImageAnalysisOutput>;
-    fn generate_code<'a>(&'a self, input: CodeGenInput) -> LlmFuture<'a, CodeGenOutput>;
-}
-```
+- `validator.rs`
+  - Pine Script rule checks (`//@version=6`, strategy exit checks, declaration requirements)
 
-`BaseLLMProvider` centralizes request/response behavior, while `CerebrasProvider`, `XaiProvider`, `ClaudeProvider`, and `OpenAIProvider` are thin wrappers configuring endpoint/model/API-key and reusing the same interface.
+- `orchestrator.rs`
+  - bounded `tokio` concurrency
+  - `run_batch` fan-out + `on_meta_saved` callback
+  - non-fatal callback failure handling
 
-## 2) Robust error handling
+- `notify.rs`
+  - `SmtpNotifier` replacement for Node-based notification logic
 
-`PipelineError` includes:
+- `error.rs`
+  - central `PipelineError` variants for API, cache, timeout, and validation failures
 
-- `ApiTimeout`: provider request timeout
-- `SqliteLock`: lock contention
-- `PineValidation`: Pine Script rejection (`//@version=6` checks and declaration checks)
-- `Cache`, `CachePoisoned`, `TaskJoin`, `Email`, `ProviderResponse`
+- `main.rs`
+  - startup/bootstrap and dependency wiring
 
-Conversion helpers (`From<rusqlite::Error>`, `From<reqwest::Error>`, etc.) keep internal callsites clean and keep orchestration layer explicit through `anyhow`.
+## Core error model
 
-## 3) Native notification module (`notify.rs`)
+Current `PipelineError` variants are:
 
-`SmtpNotifier::send_meta_saved(...)` is a small async wrapper around `lettre` blocking send.
-It is used from the orchestrator’s `on_meta_saved` path to replace the old Node.js notification script.
+- `ApiTimeout`
+- `SqliteLock`
+- `Cache`
+- `CachePoisoned`
+- `PineValidation`
+- `Http`
+- `ProviderResponse`
+- `TokenExpired`
+- `Email`
+- `TaskJoin`
+- `Io`
 
-## 4) Orchestrator and `on_meta_saved` hook (`orchestrator.rs`)
+## Runtime defaults
 
-- `Pipeline` owns three shared provider clients:
-  `classifier`, `image_analyzer`, `code_generator`.
-- A `Semaphore` limits active workers.
-- For each bookmark:
-  1. check cache
-  2. call `classify`
-  3. call `analyze_image` (if image URL exists)
-  4. call `generate_code`
-  5. validate Pine Script
-  6. upsert into cache
-  7. run `on_meta_saved` callback
-  8. optional `SmtpNotifier::send_meta_saved(...)`.
+- Models and endpoints are configured in provider constructors and can be overridden with env:
+  - `CEREBRAS_MODEL`
+  - `XAI_MODEL`
+  - `ANTHROPIC_MODEL`
+  - `OPENAI_MODEL`
 
-## 5) SQLite cache strategy
-
-`BookmarkCache` uses:
-
-```rust
-conn: Arc<Mutex<Connection>>
-```
-
-All DB operations are serialized by the mutex, and executed in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
+- Cache, timing, and run controls are sourced from:
+  - `CACHE_PATH`
+  - `API_TIMEOUT`
+  - `VISION_TIMEOUT`
+  - `FETCH_TIMEOUT`
+  - `MAX_WORKERS`
+  - `OUTPUT_DIR`
 
 ## Running
 
 ```bash
 cd rust
 cargo build
-cargo run
+cargo test
+cargo run -- --text "BTC 4h bullish divergence"
 ```
 
-Set at least:
-- `OPENAI_API_KEY`
-- `XAI_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `CEREBRAS_API_KEY`
+For dry-run bootstrap checks, use:
 
-to run the migration binary end-to-end.
+```bash
+cargo run -- --clear-cache --cache-path /tmp/xbp-cache.db
+```
 
-## Think Step-by-Step: how data flows
+`cargo run -- --help` shows all available CLI flags.
 
-1. `X Fetcher` yields `Vec<Bookmark>`.
-2. `Pipeline::run` receives bookmarks and spawns worker tasks (bounded by semaphore permits).
-3. Each worker calls `process_single`:
-   1. Reads `Bookmark` from function input (ownership begins here).
-   2. Passes ownership of `ClassificationInput` (contains `Bookmark`) to `classifier.classify`.
-   3. Uses `classification` and borrowed `Bookmark` to optionally build `ImageAnalysisInput` and send to `image_analyzer.analyze_image`.
-4. Ownership of `Bookmark` is moved into `CodeGenInput` when constructing `generate_code`.
-5. `CodeGenInput` is consumed by `code_generator.generate_code`, producing `CodeGenOutput`.
-6. `validate_pine_script` checks script safety and format.
-7. `FinalScript` is assembled and inserted into SQLite via `cache.upsert`.
-8. `on_meta_saved` hook runs using a borrowed `&FinalScript`; any side effects happen after persistence.
-9. Worker returns `FinalScript` to caller; orchestrator collects all task outputs.
+## Think Step-by-Step: ownership flow
+
+1. `main` loads environment, builds providers, resolves config, and parses bookmarks.
+2. `Pipeline::run_batch` clones input into bounded worker tasks.
+3. Each worker reads a `Bookmark`, calls classifier, then optional vision analysis.
+4. A `CodeGenInput` is assembled from borrowed/owned plan and bookmark data.
+5. `generate_code` returns `CodeGenOutput`; validation converts it into persisted script state.
+6. Cache writes are performed, and `on_meta_saved` is invoked with the persisted metadata path.
+7. Worker outputs are collected into final `PipelineResult` entries.

@@ -2,6 +2,8 @@
 
 ## 2026-03-15
 
-- Added a focused cache round-trip test suite and ensured tests run before continuing changes.
-- Fixed patch-introduced assertion/type issues in cache tests by using explicit `serde_json::Value` expectations.
-- Confirmed `cargo test` passes with 9 tests before proceeding to finalization.
+- Kept provider/runtime consistency by adding explicit `.env` bootstrap coverage in an integration test that runs `--clear-cache` to validate startup behavior without live API calls.
+- Updated test matrix assertions to avoid model/environment drift by using scoped env restoration in unit tests.
+- Fixed the env bootstrap integration path by resolving the built binary from `target/debug` as a fallback when `CARGO_BIN_EXE_*` is unavailable.
+- Updated project docs (`README.md`, `rust/README.md`, `CLAUDE.md`) to mark SMTP as optional and confirm the Rust-only runtime.
+- Adjusted migration tracking (`tasks/todo.md`) so completed/remaining milestones match verified code/test status.

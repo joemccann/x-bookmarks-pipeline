@@ -1,15 +1,22 @@
 # X Bookmarks Pipeline (Rust)
 
-This repository is now a **Rust-first** implementation of the multi-LLM bookmark pipeline that classifies X bookmarks, extracts chart signal context, and generates TradingView Pine Script v6 code.
+This repository contains a Rust-first migration of the X bookmark pipeline.
 
-The Rust implementation lives in `rust/` and is built with:
+The implementation lives in `rust/` and includes:
 
-- `tokio` for async orchestration
-- `reqwest` for HTTP clients
-- `rusqlite` with `Arc<Mutex<Connection>>` for thread-safe caching
-- `serde` for structured prompts/results
-- `lettre` for native email notifications
-- `thiserror` + `anyhow` for structured error handling
+- multi-provider orchestration (`Cerebras`, `xAI`, `Claude`, `OpenAI`)
+- optional vision analysis
+- Pine Script v6 generation and validation
+- SQLite cache persistence
+- native SMTP notifications through `lettre`
+- structured error handling with `thiserror` + `anyhow`
+
+## Current status
+
+- Full Rust runtime is implemented in `rust/`.
+- The pipeline boots from `.env` via `dotenvy`.
+- Runtime providers are shared and instantiated once at startup.
+- Local test suite currently passes (`33` tests as of the latest push).
 
 ## Setup
 
@@ -19,20 +26,11 @@ cd rust
 cargo build
 ```
 
-## Environment variables
+## Required and optional environment variables
 
-- Required:
-  - `CEREBRAS_API_KEY`
-  - `XAI_API_KEY`
-  - `ANTHROPIC_API_KEY`
-  - `OPENAI_API_KEY`
-  - `SMTP_HOST`
-  - `SMTP_USER`
-  - `SMTP_PASSWORD`
-  - `SMTP_FROM`
-  - `SMTP_TO`
-
-- Optional: `CEREBRAS_MODEL`, `XAI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `CACHE_PATH`, `MAX_WORKERS`, `API_TIMEOUT`, `VISION_TIMEOUT`, `FETCH_TIMEOUT`
+- Required for end-to-end execution: `CEREBRAS_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+- Optional notification configuration: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`
+- Optional model/runner configuration: `CEREBRAS_MODEL`, `XAI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `CACHE_PATH`, `MAX_WORKERS`, `API_TIMEOUT`, `VISION_TIMEOUT`, `FETCH_TIMEOUT`, `DEFAULT_TICKER`, `DEFAULT_TIMEFRAME`
 
 ## Build, test, and run
 
@@ -40,22 +38,22 @@ cargo build
 cd rust
 cargo build
 cargo test
-cargo run
+cargo run -- --text "BTC 4h bullish momentum and breakout"
 ```
 
-`cargo run` runs the orchestrator example in `rust/src/main.rs`.
+`cargo run` executes the orchestrator workflow.
 
 ## Repository layout
 
-```
+```text
 .
 ├── rust/
 │   ├── src/
-│   │   ├── llm.rs         # LLMProvider trait + clients
-│   │   ├── cache.rs       # SQLite cache layer
-│   │   ├── orchestrator.rs # Pipeline coordinator + hooks
-│   │   ├── notify.rs      # Native lettre email notifier
-│   │   ├── error.rs       # shared PipelineError
+│   │   ├── llm.rs          # shared LLMProvider abstraction and provider clients
+│   │   ├── cache.rs        # SQLite cache with Arc<Mutex<Connection>>
+│   │   ├── orchestrator.rs # bounded async pipeline orchestration + hooks
+│   │   ├── notify.rs       # native lettre notifier (SMTP)
+│   │   ├── error.rs        # central PipelineError model
 │   │   └── ...
 │   ├── Cargo.toml
 │   └── Cargo.lock
@@ -65,4 +63,4 @@ cargo run
 
 ## Notes
 
-The repo now intentionally contains only the Rust migration and its Rust-native operational docs.
+Python and Node runtime artifacts are intentionally out of the code path.
