@@ -1,22 +1,43 @@
-# X Bookmarks Pipeline (Rust)
+# X Bookmarks Pipeline
 
-This repository contains a Rust-first migration of the X bookmark pipeline.
+The X Bookmarks Pipeline automates end-to-end processing of X (Twitter) bookmarks into trading artifacts. It:
 
-The implementation lives in `rust/` and includes:
+- Loads bookmarks from the X API or local input
+- Classifies whether a bookmark is finance-related
+- Optionally analyzes chart images (vision)
+- Generates a Pine Script v6 strategy/reasoning payload
+- Validates generated scripts and writes artifacts for review/deployment
+- Stores intermediate/final results in SQLite for idempotent reruns
+- Sends email notifications for completed metadata writes and daemon cycle summaries
 
-- multi-provider orchestration (`Cerebras`, `xAI`, `Claude`, `OpenAI`)
-- optional vision analysis
-- Pine Script v6 generation and validation
-- SQLite cache persistence
-- native SMTP notifications through `lettre`
-- structured error handling with `thiserror` + `anyhow`
+## Features
 
-## Current status
+- Multi-provider LLM orchestration (`Cerebras`, `xAI`, `Claude`, `OpenAI`)
+- Async parallel execution with bounded worker concurrency
+- Optional vision fallback and cache reuse across stages
+- Persistent caching by bookmark id (`classification`, `plan`, `script`, validation, and completion state)
+- Daemon mode for periodic polling and incremental processing
+- Structured errors and robust retry-safe cache lock handling
 
-- Full Rust runtime is implemented in `rust/`.
-- The pipeline boots from `.env` via `dotenvy`.
-- Runtime providers are shared and instantiated once at startup.
-- Local test suite currently passes (`33` tests as of the latest push).
+## Repository layout
+
+```text
+.
+├── rust/
+│   ├── src/
+│   │   ├── llm.rs         # LLM provider abstraction + implementations
+│   │   ├── cache.rs       # SQLite cache and migration helpers
+│   │   ├── orchestrator.rs # Pipeline orchestration + hooks
+│   │   ├── notify.rs      # Native SMTP notifications
+│   │   ├── error.rs       # PipelineError/structured failures
+│   │   └── ...
+│   ├── Cargo.toml
+│   └── Cargo.lock
+├── .env.example
+└── CLAUDE.md
+```
+
+The runtime entrypoint is `rust/src/main.rs` and all execution is in the `rust/` crate.
 
 ## Setup
 
@@ -24,6 +45,12 @@ The implementation lives in `rust/` and includes:
 cp .env.example .env
 cd rust
 cargo build
+```
+
+Optional: run tests before first use.
+
+```bash
+cargo test
 ```
 
 ## Required and optional environment variables
@@ -39,30 +66,29 @@ cargo build
 cd rust
 cargo build
 cargo test
+# one-time execution from text input
 cargo run -- --text "BTC 4h bullish momentum and breakout"
+
+# periodic mode (polling)
 cargo run -- --daemon --daemon-interval 300
 ```
 
 `cargo run` executes the orchestrator workflow.
 
-When daemon mode is enabled, per-bookmark notifications are sent from the shared SMTP notifier (if configured). A cycle summary email is also sent whenever a cycle processes one or more bookmarks.
+When daemon mode is enabled, per-bookmark notifications are sent from the SMTP notifier (if configured), and a cycle summary is also sent for each non-empty batch.
 
-## Repository layout
+## Common usage patterns
 
-```text
-.
-├── rust/
-│   ├── src/
-│   │   ├── llm.rs          # shared LLMProvider abstraction and provider clients
-│   │   ├── cache.rs        # SQLite cache with Arc<Mutex<Connection>>
-│   │   ├── orchestrator.rs # bounded async pipeline orchestration + hooks
-│   │   ├── notify.rs       # native lettre notifier (SMTP)
-│   │   ├── error.rs        # central PipelineError model
-│   │   └── ...
-│   ├── Cargo.toml
-│   └── Cargo.lock
-├── .env.example
-└── CLAUDE.md
+```bash
+# fetch latest bookmarks and process them
+cargo run -- --fetch --fetch-user-id <x_user_id>
+
+# process bookmarks from JSON/text file
+cargo run -- --file bookmarks.json
+cargo run -- --text "ETH breakout after key support hold"
+
+# disable external side effects for dry-runs
+cargo run -- --no-save --no-cache --text "quick reasoning check"
 ```
 
 ## Notes

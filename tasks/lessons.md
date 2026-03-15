@@ -8,3 +8,4 @@
 - Updated project docs (`README.md`, `rust/README.md`, `CLAUDE.md`) to mark SMTP as optional and confirm the Rust-only runtime.
 - Adjusted migration tracking (`tasks/todo.md`) so completed/remaining milestones match verified code/test status.
 - Fixed a daemon notification regression where the cycle runner returned early before entering the loop and skipped per-cycle completion hooks when cache-completed items were processed.
+- Removed migration-centric wording from top-level README and replaced it with product-centric setup/usage documentation.
