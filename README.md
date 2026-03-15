@@ -63,15 +63,6 @@ cargo run
 └── CLAUDE.md
 ```
 
-## Removed legacy surfaces
-
-All legacy Python pipeline code and docs were removed from this repository:
-
-- `src/`, `tests/`, `trading/`, and `bin/` Python entrypoints
-- Python dependency metadata (`requirements.txt`, `package.json`)
-- Node notifier shim (`bin/notify.mjs`)
-- Python daemon/service artifacts (`service_ctl.sh`, launchd plist)
-
 ## Notes
 
 The repo now intentionally contains only the Rust migration and its Rust-native operational docs.

@@ -2,7 +2,7 @@
 
 ## Rust-only architecture
 
-X Bookmarks Pipeline is now maintained as a Rust migration in `rust/`. There is no Python runtime code in this repository.
+X Bookmarks Pipeline is now maintained as a Rust migration in `rust/`. Only Rust runtime code is tracked in this repository.
 
 - `llm.rs` exposes the shared `LLMProvider` trait (`classify`, `analyze_image`, `generate_code`).
 - `cache.rs` owns SQLite persistence with shared mutable state via `Arc<Mutex<Connection>>`.
@@ -32,5 +32,5 @@ Set the following in `.env`:
 
 ## Notes for future work
 
-- No Python files, Python tests, Python service scripts, or Python trading modules are tracked anymore.
-- Keep this repo Rust-first; do not reintroduce legacy `bin/` Python entrypoints.
+- No legacy non-Rust runtime/tests/trading modules are tracked.
+- Keep this repo Rust-first; do not reintroduce legacy non-Rust entrypoints.
