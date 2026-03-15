@@ -24,10 +24,27 @@ impl SmtpNotifier {
     }
 
     pub async fn send_meta_saved(&self, meta_path: &str) -> PipelineResult<()> {
-        let config = self.config.clone();
         let subject = format!("Bookmark meta saved: {meta_path}");
         let body = format!("Meta file written: {meta_path}");
+        self.send_text(subject, body).await
+    }
 
+    pub async fn send_cycle_summary(
+        &self,
+        total: usize,
+        completed: usize,
+        cached: usize,
+        failed: usize,
+    ) -> PipelineResult<()> {
+        let subject = "X Bookmarks pipeline cycle complete".to_string();
+        let body = format!(
+            "cycle complete: total={total}, completed={completed}, cached={cached}, failed={failed}"
+        );
+        self.send_text(subject, body).await
+    }
+
+    pub async fn send_text(&self, subject: String, body: String) -> PipelineResult<()> {
+        let config = self.config.clone();
         tokio::task::spawn_blocking(move || Self::send_sync(config, &subject, &body))
             .await
             .map_err(|err| PipelineError::TaskJoin {

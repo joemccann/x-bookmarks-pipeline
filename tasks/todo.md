@@ -74,15 +74,15 @@ Last updated: 2026-03-15
 - [x] **T14** Wire orchestrator pipeline with bounded worker concurrency
   - `depends_on: [T6, T7, T8, T9, T10, T11, T12]`
   - Acceptance: run_batch processes N items with worker cap and preserves ordering policy.
-- [ ] **T15** Implement periodic polling runner/daemon behavior
+- [x] **T15** Implement periodic polling runner/daemon behavior
   - `depends_on: [T2, T4, T14]`
   - Acceptance: supports interval config, handles empty cycles, and supports graceful stop.
 
 ### Milestone D — Hardening & Release Confidence (Issue 104)
 
-- [ ] **T16** Rebuild Rust test matrix to match prior behavior coverage
+- [x] **T16** Rebuild Rust test matrix to match prior behavior coverage
   - `depends_on: [T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15]`
   - Acceptance: test categories for cache hit/miss, failure propagation, hook resilience, and end-to-end happy-path.
-- [ ] **T17** Run final parity verification and documentation freeze
+- [x] **T17** Run final parity verification and documentation freeze
   - `depends_on: [T14, T13, T15, T16]`
   - Acceptance: `cargo test` passes, migration docs align, and runbook for deploy/recovery is updated.

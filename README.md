@@ -31,6 +31,7 @@ cargo build
 - Required for end-to-end execution: `CEREBRAS_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
 - Optional notification configuration: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`
 - Optional model/runner configuration: `CEREBRAS_MODEL`, `XAI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `CACHE_PATH`, `MAX_WORKERS`, `API_TIMEOUT`, `VISION_TIMEOUT`, `FETCH_TIMEOUT`, `DEFAULT_TICKER`, `DEFAULT_TIMEFRAME`
+- Optional daemon scheduling configuration: `XPB_DAEMON`, `XPB_DAEMON_INTERVAL_SECONDS`, `XPB_DAEMON_MAX_CYCLES`, `XPB_FETCH_LOOP`
 
 ## Build, test, and run
 
@@ -39,9 +40,12 @@ cd rust
 cargo build
 cargo test
 cargo run -- --text "BTC 4h bullish momentum and breakout"
+cargo run -- --daemon --daemon-interval 300
 ```
 
 `cargo run` executes the orchestrator workflow.
+
+When daemon mode is enabled, per-bookmark notifications are sent from the shared SMTP notifier (if configured). A cycle summary email is also sent whenever a cycle processes one or more bookmarks.
 
 ## Repository layout
 

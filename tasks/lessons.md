@@ -7,3 +7,4 @@
 - Fixed the env bootstrap integration path by resolving the built binary from `target/debug` as a fallback when `CARGO_BIN_EXE_*` is unavailable.
 - Updated project docs (`README.md`, `rust/README.md`, `CLAUDE.md`) to mark SMTP as optional and confirm the Rust-only runtime.
 - Adjusted migration tracking (`tasks/todo.md`) so completed/remaining milestones match verified code/test status.
+- Fixed a daemon notification regression where the cycle runner returned early before entering the loop and skipped per-cycle completion hooks when cache-completed items were processed.

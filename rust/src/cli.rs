@@ -56,6 +56,15 @@ pub struct CliArgs {
     #[arg(long = "cache-stats", help = "Print cache statistics and exit")]
     pub cache_stats: bool,
 
+    #[arg(long = "daemon", help = "Run continuously in polling mode")]
+    pub daemon: bool,
+
+    #[arg(long = "daemon-interval", default_value_t = 300, help = "Polling interval in seconds when --daemon is enabled")]
+    pub daemon_interval: u64,
+
+    #[arg(long = "max-cycles", help = "Maximum daemon cycles before exit")]
+    pub max_cycles: Option<usize>,
+
     #[arg(long = "output-dir", help = "Override output directory")]
     pub output_dir: Option<String>,
 

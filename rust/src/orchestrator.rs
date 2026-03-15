@@ -115,7 +115,7 @@ impl Pipeline {
             if let Some(cache) = &self.cache {
                 if let Ok(true) = cache.has_completed(&bookmark.id).await {
                     if let Ok(cached) = self.load_from_cache(&bookmark.id).await {
-                        return cached;
+                        return self.finalize(bookmark, cached, save).await;
                     }
                 }
             }

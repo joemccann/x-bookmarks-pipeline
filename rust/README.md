@@ -78,6 +78,7 @@ cd rust
 cargo build
 cargo test
 cargo run -- --text "BTC 4h bullish divergence"
+cargo run -- --daemon --daemon-interval 300
 ```
 
 For dry-run bootstrap checks, use:
@@ -87,6 +88,19 @@ cargo run -- --clear-cache --cache-path /tmp/xbp-cache.db
 ```
 
 `cargo run -- --help` shows all available CLI flags.
+
+## Daemon mode
+
+```bash
+cd rust
+cargo run -- --daemon --daemon-interval 300 --max-cycles 1
+```
+
+Daemon mode keeps the process alive and processes new bookmarks on each interval. To stop after one cycle, use `--max-cycles 1` (useful for health checks).
+
+Notification behavior:
+- `--daemon` + SMTP settings: sends per-bookmark meta emails and a cycle summary for non-empty cycles.
+- No SMTP settings: notifier stays disabled and the daemon still runs with local output.
 
 ## Think Step-by-Step: ownership flow
 

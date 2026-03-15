@@ -48,6 +48,9 @@ Optional runtime tuning:
 - `API_TIMEOUT`
 - `VISION_TIMEOUT`
 - `FETCH_TIMEOUT`
+- `XPB_DAEMON` / `DAEMON_MODE`
+- `DAEMON_INTERVAL_SECONDS` / `XPB_DAEMON_INTERVAL_SECONDS`
+- `DAEMON_MAX_CYCLES` / `XPB_DAEMON_MAX_CYCLES`
 
 ## Notes
 
@@ -65,7 +68,7 @@ Optional runtime tuning:
 - [x] Native `lettre` notifier integration.
 - [x] Bounded orchestrator concurrency.
 - [x] Non-fatal `on_meta_saved` callback behavior.
-- [ ] Daemon/runner lifecycle parity (periodic poll + graceful stop) not yet implemented.
+- [x] Daemon/runner lifecycle parity (periodic poll + graceful stop).
 - [x] Tests for unit + integration behavior.
 
 See `tasks/todo.md` for current execution plan and open items.
