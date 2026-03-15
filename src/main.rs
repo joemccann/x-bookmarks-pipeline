@@ -3,17 +3,27 @@ use std::{env, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use clap::Parser;
 use reqwest::Client;
+use reqwest::StatusCode;
 use serde_json::Value;
 use x_bookmarks_pipeline_rust::{
     cache::BookmarkCache,
     cli::{self, CliArgs},
     config::AppConfig,
+    models::Bookmark,
     fetcher::XBookmarkFetcher,
     llm::{CerebrasProvider, ClaudeProvider, LLMProvider, OpenAIProvider, XaiProvider},
     models::PipelineResult as PipelineResultModel,
     notify::{EmailConfig, SmtpNotifier},
     orchestrator::{OnMetaSaved, Pipeline},
 };
+use x_bookmarks_pipeline_rust::error::PipelineError;
+
+#[derive(Clone, Debug)]
+struct XRefreshConfig {
+    client_id: String,
+    client_secret: Option<String>,
+    refresh_token: String,
+}
 
 fn env_any(names: &[&str]) -> Option<String> {
     names
@@ -46,6 +56,17 @@ fn env_usize(names: &[&str], default: usize) -> usize {
 fn require_env(name: &str, aliases: &[&str]) -> anyhow::Result<String> {
     env_any(&std::iter::once(name).chain(aliases.iter().copied()).collect::<Vec<_>>())
         .with_context(|| format!("missing required env var {name}"))
+}
+
+fn load_refresh_config() -> Option<XRefreshConfig> {
+    let refresh_token = env_any(&["X_REFRESH_TOKEN", "XPB_X_REFRESH_TOKEN"])?;
+    let client_id = env_any(&["X_CLIENT_ID", "XPB_X_CLIENT_ID"])?;
+    let client_secret = env_any(&["X_CLIENT_SECRET", "XPB_X_CLIENT_SECRET"]);
+    Some(XRefreshConfig {
+        client_id,
+        client_secret,
+        refresh_token,
+    })
 }
 
 fn normalize_x_username(raw: &str) -> String {
@@ -93,6 +114,111 @@ async fn resolve_fetch_user_id(
     Err(anyhow::anyhow!("failed to resolve username {username}: no user id returned"))
 }
 
+fn is_auth_expired_error(err: &anyhow::Error) -> bool {
+    let error = err.to_string().to_lowercase();
+    error.contains("authentication") || error.contains("unsupported authentication") || error.contains("expired") || error.contains("forbidden") || error.contains("unauthorized")
+}
+
+async fn refresh_x_access_token(
+    client: &Client,
+    refresh_config: &mut XRefreshConfig,
+) -> anyhow::Result<String> {
+    let mut form = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_config.refresh_token.as_str()),
+        ("client_id", refresh_config.client_id.as_str()),
+    ];
+    if let Some(secret) = refresh_config.client_secret.as_deref() {
+        form.push(("client_secret", secret));
+    }
+
+    let response = client
+        .post("https://api.x.com/2/oauth2/token")
+        .form(&form)
+        .send()
+        .await?;
+
+    let status = response.status();
+    let payload = response.text().await?;
+
+    if status != StatusCode::OK {
+        return Err(anyhow::anyhow!(
+            "token refresh failed ({status}): {payload}"
+        ));
+    }
+
+    let body: Value = serde_json::from_str(&payload)?;
+
+    if let Some(error) = body.get("error").and_then(Value::as_str) {
+        let details = body
+            .get("error_description")
+            .and_then(Value::as_str)
+            .unwrap_or(error);
+        return Err(anyhow::anyhow!("token refresh rejected: {details}"));
+    }
+
+    let access_token = body
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("token refresh response missing access_token"))?;
+
+    if let Some(new_refresh) = body
+        .get("refresh_token")
+        .and_then(Value::as_str)
+    {
+        refresh_config.refresh_token = new_refresh.to_string();
+    }
+
+    Ok(access_token)
+}
+
+async fn fetch_bookmarks_with_refresh(
+    fetcher: &XBookmarkFetcher,
+    fetch_client: &Client,
+    refresh_config: &mut Option<XRefreshConfig>,
+) -> anyhow::Result<Vec<Bookmark>> {
+    match fetcher.fetch().await {
+        Ok(bookmarks) => Ok(bookmarks),
+        Err(PipelineError::TokenExpired { .. }) if refresh_config.is_some() => {
+            let token = match refresh_config {
+                Some(cfg) => refresh_x_access_token(fetch_client, cfg).await?,
+                None => return Err(PipelineError::TokenExpired {
+                    details: "authentication token expired".to_string(),
+                }
+                .into()),
+            };
+            fetcher.set_access_token(token).await;
+            fetcher.fetch().await.map_err(Into::into)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+async fn resolve_fetch_user_id_with_refresh(
+    client: &Client,
+    username: &str,
+    token: &mut String,
+    refresh_config: &mut Option<XRefreshConfig>,
+) -> anyhow::Result<String> {
+    match resolve_fetch_user_id(client, token, username).await {
+        Ok(user_id) => Ok(user_id),
+        Err(err) => {
+            if refresh_config.is_some() && is_auth_expired_error(&err) {
+                let mut config = refresh_config
+                    .take()
+                    .with_context(|| "no refresh config available")?;
+                let new_token = refresh_x_access_token(client, &mut config).await?;
+                *token = new_token.clone();
+                refresh_config.replace(config);
+                resolve_fetch_user_id(client, &new_token, username).await
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
 fn build_notifier() -> Option<Arc<SmtpNotifier>> {
     match (
         env_any(&["SMTP_HOST", "XPB_SMTP_HOST"]),
@@ -112,7 +238,11 @@ fn build_notifier() -> Option<Arc<SmtpNotifier>> {
     }
 }
 
-async fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option<XBookmarkFetcher>> {
+async fn build_fetcher(
+    args: &CliArgs,
+    cfg: &AppConfig,
+    refresh_config: &mut Option<XRefreshConfig>,
+) -> anyhow::Result<Option<XBookmarkFetcher>> {
     if args.fetch || env_flag(&["XPB_FETCH_LOOP", "DAEMON_FETCH"]) {
         let token = env_any(&[
             "X_BEARER_TOKEN",
@@ -131,6 +261,7 @@ async fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option
             .timeout(Duration::from_secs(cfg.fetch_timeout.round() as u64))
             .build()?;
 
+        let mut access_token = token;
         let explicit_user_id = args
             .fetch_user_id
             .clone()
@@ -144,7 +275,13 @@ async fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option
             .or_else(|| env_any(&["X_FETCH_USERNAME", "XPB_X_FETCH_USERNAME"]))
         {
             let username = normalize_x_username(&username);
-            Some(resolve_fetch_user_id(&client, &token, &username).await?)
+            Some(resolve_fetch_user_id_with_refresh(
+                &client,
+                &username,
+                &mut access_token,
+                refresh_config,
+            )
+            .await?)
         } else {
             None
         };
@@ -161,7 +298,7 @@ async fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option
 
         Ok(Some(XBookmarkFetcher::new(
             endpoint,
-            token,
+            access_token,
             args.fetch_limit.min(100),
             args.fetch_limit,
             args.fetch_pages,
@@ -174,11 +311,13 @@ async fn build_fetcher(args: &CliArgs, cfg: &AppConfig) -> anyhow::Result<Option
 
 async fn run_cycle(
     pipeline: &Arc<Pipeline>,
-    fetcher: &Option<XBookmarkFetcher>,
+    fetcher: &mut Option<XBookmarkFetcher>,
+    fetch_client: &Client,
+    refresh_config: &mut Option<XRefreshConfig>,
     args: &CliArgs,
 ) -> Result<Vec<PipelineResultModel>, anyhow::Error> {
     let bookmarks = if let Some(fetcher) = fetcher {
-        fetcher.fetch().await?
+        fetch_bookmarks_with_refresh(fetcher, fetch_client, refresh_config).await?
     } else {
         cli::load_bookmarks(args)?
     };
@@ -286,7 +425,8 @@ async fn main() -> Result<()> {
         .build()?;
 
     let providers = pipeline_providers(shared_http.clone())?;
-    let fetcher = build_fetcher(&args, &cfg).await?;
+    let mut refresh_config = load_refresh_config();
+    let mut fetcher = build_fetcher(&args, &cfg, &mut refresh_config).await?;
     let notifier = build_notifier();
 
     let hook: OnMetaSaved = Arc::new(|meta_path: &str| {
@@ -330,7 +470,7 @@ async fn main() -> Result<()> {
     };
 
     if !daemon_mode {
-        let _ = run_cycle(&pipeline, &fetcher, &args).await?;
+        let _ = run_cycle(&pipeline, &mut fetcher, &shared_http, &mut refresh_config, &args).await?;
         return Ok(());
     }
 
@@ -338,7 +478,15 @@ async fn main() -> Result<()> {
     let mut fail_streak = 0u32;
     loop {
         cycle += 1;
-        match run_cycle(&pipeline, &fetcher, &args).await {
+        match run_cycle(
+            &pipeline,
+            &mut fetcher,
+            &shared_http,
+            &mut refresh_config,
+            &args,
+        )
+        .await
+        {
             Ok(results) => {
                 fail_streak = 0;
                 if let Some(notifier) = &notifier {

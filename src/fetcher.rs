@@ -3,11 +3,13 @@ use crate::models::Bookmark;
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct XBookmarkFetcher {
     endpoint: String,
-    token: String,
+    token: Arc<Mutex<String>>,
     page_limit: usize,
     total_limit: usize,
     max_pages: usize,
@@ -29,9 +31,9 @@ impl XBookmarkFetcher {
         max_pages: usize,
         client: Client,
     ) -> Self {
-        Self {
+    Self {
             endpoint: endpoint.into(),
-            token: token.into(),
+            token: Arc::new(Mutex::new(token.into())),
             page_limit: page_limit.max(1),
             total_limit: total_limit.max(1),
             max_pages: max_pages.max(1),
@@ -65,8 +67,18 @@ impl XBookmarkFetcher {
         Ok(all_bookmarks)
     }
 
+    pub async fn set_access_token(&self, token: impl Into<String>) {
+        let mut lock = self.token.lock().await;
+        *lock = token.into();
+    }
+
+    pub async fn get_access_token(&self) -> String {
+        self.token.lock().await.clone()
+    }
+
     pub(crate) async fn fetch_page(&self, page_token: Option<&str>) -> PipelineResult<XBookmarkPage> {
-        let mut request = self.client.get(&self.endpoint).bearer_auth(&self.token);
+        let token = self.get_access_token().await;
+        let mut request = self.client.get(&self.endpoint).bearer_auth(token);
         if let Some(token) = page_token {
             request = request.query(&[("pagination_token", token)]);
         }

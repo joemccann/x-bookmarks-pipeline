@@ -57,6 +57,7 @@ cargo test
 
 - Required for end-to-end execution: `CEREBRAS_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
 - Optional fetch auth configuration: `X_BEARER_TOKEN`, `X_ACCESS_TOKEN`, `X_USER_ACCESS_TOKEN`
+- Optional automatic refresh configuration: `X_CLIENT_ID` / `XPB_X_CLIENT_ID`, `X_CLIENT_SECRET` / `XPB_X_CLIENT_SECRET`, `X_REFRESH_TOKEN` / `XPB_X_REFRESH_TOKEN`
 - Optional notification configuration: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`
 - Optional model/runner configuration: `CEREBRAS_MODEL`, `XAI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `CACHE_PATH`, `MAX_WORKERS`, `API_TIMEOUT`, `VISION_TIMEOUT`, `FETCH_TIMEOUT`, `DEFAULT_TICKER`, `DEFAULT_TIMEFRAME`
 - Optional X fetch configuration: `X_FETCH_USER_ID`, `X_FETCH_USERNAME`, `XPB_X_FETCH_USER_ID`, `XPB_X_FETCH_USERNAME`
@@ -77,6 +78,10 @@ cargo run -- --daemon --daemon-interval 300
 `cargo run` executes the orchestrator workflow.
 
 When daemon mode is enabled, per-bookmark notifications are sent from the SMTP notifier (if configured), and a cycle summary is also sent for each non-empty batch.
+
+## Automatic token refresh
+
+If X returns an authentication-expired error while fetching bookmarks, the pipeline will automatically request a new access token using your configured refresh credentials and retry the fetch once.
 
 ## Common usage patterns
 
