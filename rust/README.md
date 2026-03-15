@@ -19,7 +19,7 @@ This folder contains an initial Rust implementation of the core pipeline service
 - `rust/src/cache.rs`  
   SQLite cache wrapper with `Arc<Mutex<Connection>>`, `get`, `upsert`.
 - `rust/src/notify.rs`  
-  Native `SmtpNotifier` replacement for `notify.mjs` using `lettre`.
+  Native `SmtpNotifier` replacement for the old Node notifier using `lettre`.
 - `rust/src/orchestrator.rs`  
   `Pipeline` orchestrator with bounded parallelism + `on_meta_saved` hook.
 - `rust/src/main.rs`  

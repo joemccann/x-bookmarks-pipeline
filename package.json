@@ -1,9 +1,0 @@
-{
-  "name": "x-bookmarks-pipeline",
-  "version": "1.0.0",
-  "type": "module",
-  "private": true,
-  "dependencies": {
-    "nodemailer": "^6.9.0"
-  }
-}

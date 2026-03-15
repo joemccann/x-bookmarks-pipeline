@@ -151,10 +151,5 @@ reports/*.html
 # SQLite cache (top-level only, not src/cache/)
 /cache/
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-
 # Token state (contains live credentials — never commit)
 .token_state.json
