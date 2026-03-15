@@ -1,18 +1,21 @@
 use std::{env, sync::Arc, time::Duration};
 
-use anyhow::Context;
+use anyhow::{Context, Result};
+use clap::Parser;
 use x_bookmarks_pipeline_rust::{
     cache::BookmarkCache,
+    cli::{self, CliArgs},
     config::AppConfig,
-    llm::{CerebrasProvider, ClaudeProvider, OpenAIProvider, XaiProvider},
-    models::Bookmark,
+    llm::{CerebrasProvider, ClaudeProvider, LLMProvider, OpenAIProvider, XaiProvider},
     notify::{EmailConfig, SmtpNotifier},
     orchestrator::{OnMetaSaved, Pipeline},
 };
 use reqwest::Client;
 
 fn env_any(names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| env::var(name).ok().filter(|value| !value.trim().is_empty()))
+    names
+        .iter()
+        .find_map(|name| env::var(name).ok().filter(|value| !value.trim().is_empty()))
 }
 
 fn require_env(name: &str, aliases: &[&str]) -> anyhow::Result<String> {
@@ -20,58 +23,86 @@ fn require_env(name: &str, aliases: &[&str]) -> anyhow::Result<String> {
         .with_context(|| format!("missing required env var {name}"))
 }
 
-fn parse_bookmarks() -> Vec<Bookmark> {
-    vec![
-        Bookmark {
-            id: "tweet-1001".to_string(),
-            text: "Bitcoin shows potential breakout near 68k; RSI overbought with resistance".to_string(),
-            author: "alpha_trader".to_string(),
-            date: "2026-03-14".to_string(),
-            image_urls: vec!["https://example.com/sample-chart.png".to_string()],
-            tweet_url: "https://x.com/example/status/1001".to_string(),
-            chart_description: String::new(),
-        },
-        Bookmark {
-            id: "tweet-1002".to_string(),
-            text: "Nice article about Rust async ergonomics".to_string(),
-            author: "builder".to_string(),
-            date: "2026-03-12".to_string(),
-            image_urls: vec![],
-            tweet_url: "https://x.com/example/status/1002".to_string(),
-            chart_description: String::new(),
-        },
-    ]
-}
-
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     if dotenvy::from_filename(".env").is_err() {
         let _ = dotenvy::dotenv();
     }
 
-    let cfg = AppConfig::from_env();
+    let args = CliArgs::parse();
+    let mut cfg = AppConfig::from_env();
+
+    if let Some(output_dir) = args.output_dir.as_ref() {
+        cfg.output_dir = output_dir.clone();
+    }
+    if let Some(cache_path) = args.cache_path.as_ref() {
+        cfg.cache_path = cache_path.clone();
+    }
+    if let Some(workers) = args.workers {
+        cfg.max_workers = workers.max(1usize);
+    }
+
     let shared_http = Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(cfg.api_timeout.round() as u64))
         .build()?;
 
-    let cerebras = Arc::new(CerebrasProvider::new(
-        require_env("CEREBRAS_API_KEY", &[])?,
-        shared_http.clone(),
-    ));
-    let xai = Arc::new(XaiProvider::new(
-        require_env("XAI_API_KEY", &[])?,
-        shared_http.clone(),
-    ));
-    let claude = Arc::new(ClaudeProvider::new(
-        require_env("ANTHROPIC_API_KEY", &[])?,
-        shared_http.clone(),
-    ));
-    let openai = Arc::new(OpenAIProvider::new(
-        require_env("OPENAI_API_KEY", &[])?,
-        shared_http.clone(),
-    ));
+    let providers: (
+        std::sync::Arc<dyn LLMProvider>,
+        std::sync::Arc<dyn LLMProvider>,
+        std::sync::Arc<dyn LLMProvider>,
+        std::sync::Arc<dyn LLMProvider>,
+    ) = (
+        Arc::new(CerebrasProvider::new(
+            require_env("CEREBRAS_API_KEY", &[])?,
+            shared_http.clone(),
+        )),
+        Arc::new(XaiProvider::new(
+            require_env("XAI_API_KEY", &[])?,
+            shared_http.clone(),
+        )),
+        Arc::new(ClaudeProvider::new(
+            require_env("ANTHROPIC_API_KEY", &[])?,
+            shared_http.clone(),
+        )),
+        Arc::new(OpenAIProvider::new(
+            require_env("OPENAI_API_KEY", &[])?,
+            shared_http,
+        )),
+    );
 
-    let cache = BookmarkCache::new(&cfg.cache_path).ok();
+    let cache: Option<BookmarkCache> = if args.no_cache {
+        None
+    } else {
+        Some(BookmarkCache::new(&cfg.cache_path).with_context(|| format!("opening cache {}", cfg.cache_path))?)
+    };
+
+    if args.clear_cache {
+        if let Some(cache) = &cache {
+            let removed = cache.clear().await?;
+            println!("cache cleared: {removed}");
+        } else {
+            println!("cache disabled");
+        }
+        return Ok(());
+    }
+
+    if args.cache_stats {
+        if let Some(cache) = &cache {
+            let stats = cache.stats().await?;
+            println!("{}", serde_json::to_string_pretty(&stats)?);
+        } else {
+            println!("cache disabled");
+        }
+        return Ok(());
+    }
+
+    let bookmarks = cli::load_bookmarks(&args)?;
+    println!("loaded {} bookmarks", bookmarks.len());
+
+    if bookmarks.is_empty() {
+        println!("no bookmarks to process");
+        return Ok(());
+    }
 
     let notifier = match (
         env_any(&["SMTP_HOST", "XPB_SMTP_HOST"]),
@@ -99,19 +130,20 @@ async fn main() -> anyhow::Result<()> {
 
     let pipeline = Arc::new(
         Pipeline::new(
-            cerebras,
-            xai,
-            claude,
-            openai,
+            Arc::clone(&providers.0),
+            Arc::clone(&providers.1),
+            Arc::clone(&providers.2),
+            Arc::clone(&providers.3),
             cache,
             notifier,
             &cfg,
         )
+        .with_cache(!args.no_cache)
+        .with_vision(!args.no_vision)
         .with_on_meta_saved(hook),
     );
 
-    let bookmarks = parse_bookmarks();
-    let results = pipeline.run_batch(bookmarks, true).await;
+    let results = pipeline.run_batch(bookmarks, args.should_save()).await;
     println!("processed {} bookmarks", results.len());
     for result in results {
         println!(

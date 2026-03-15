@@ -26,13 +26,13 @@ Last updated: 2026-03-14
 
 ### Milestone A — Foundations & Inputs (Issue 101)
 
-- [ ] **T1** Initialize/verify runtime scaffolding and provider initialization
+- [x] **T1** Initialize/verify runtime scaffolding and provider initialization
   - `depends_on: []`
   - Acceptance: `cargo build` succeeds in clean checkout with only `cargo` + `.env` keys.
-- [ ] **T2** Implement a CLI/app command model that mirrors legacy modes (`fetch`, `text`, `file`, `--no-cache`, `--no-vision`, `--workers`, cache ops)
+- [x] **T2** Implement a CLI/app command model that mirrors legacy modes (`fetch`, `text`, `file`, `--no-cache`, `--no-vision`, `--workers`, cache ops)
   - `depends_on: [T1]`
   - Acceptance: command parser supports required flags and resolves to deterministic config.
-- [ ] **T3** Define bookmark input adapters (`text`, `file`, `memory`, API fetch payload)
+- [x] **T3** Define bookmark input adapters (`text`, `file`, `memory`, API fetch payload)
   - `depends_on: [T2]`
   - Acceptance: at least one test proves each input path maps into `Bookmark` domain model.
 
