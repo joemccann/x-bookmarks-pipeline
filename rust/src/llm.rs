@@ -465,6 +465,146 @@ struct OpenAIChatResponse {
     choices: Vec<OpenAIChoice>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = env::var(key).ok();
+            match value {
+                Some(value) => env::set_var(key, value),
+                None => env::remove_var(key),
+            }
+            EnvVarGuard { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.clone() {
+                Some(previous) => env::set_var(self.key, previous),
+                None => env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap()
+    }
+
+    fn assert_provider_model_and_endpoint<T: std::fmt::Debug>(provider: T, expected_model: &str, expected_endpoint: &str) {
+        let debug = format!("{provider:?}");
+        assert!(debug.contains(expected_model), "missing model {expected_model} in {debug}");
+        assert!(debug.contains(expected_endpoint), "missing endpoint {expected_endpoint} in {debug}");
+    }
+
+    #[test]
+    fn cerebras_provider_prefers_env_model_and_fallback_on_missing() {
+        {
+            let _guard = lock_env();
+            let _model = EnvVarGuard::set("CEREBRAS_MODEL", Some("qwen-test"));
+            let provider = CerebrasProvider::new("k".to_string(), Client::new());
+            assert_provider_model_and_endpoint(
+                provider,
+                "qwen-test",
+                "https://api.cerebras.ai/v1",
+            );
+        }
+
+        {
+            let _guard = lock_env();
+            let _model = EnvVarGuard::set("CEREBRAS_MODEL", None);
+            let provider = CerebrasProvider::new("k".to_string(), Client::new());
+            assert_provider_model_and_endpoint(
+                provider,
+                "qwen-3-235b-a22b-instruct-2507",
+                "https://api.cerebras.ai/v1",
+            );
+        }
+    }
+
+    #[test]
+    fn xai_provider_prefers_env_model_and_fallback_on_missing() {
+        {
+            let _guard = lock_env();
+            let _model = EnvVarGuard::set("XAI_MODEL", Some("grok-test"));
+            let provider = XaiProvider::new("k".to_string(), Client::new());
+            assert_provider_model_and_endpoint(provider, "grok-test", "https://api.x.ai/v1");
+        }
+
+        {
+            let _guard = lock_env();
+            let _model = EnvVarGuard::set("XAI_MODEL", None);
+            let provider = XaiProvider::new("k".to_string(), Client::new());
+            assert_provider_model_and_endpoint(
+                provider,
+                "grok-4-0709",
+                "https://api.x.ai/v1",
+            );
+        }
+    }
+
+    #[test]
+    fn claude_provider_prefers_env_model_and_fallback_on_missing() {
+        {
+            let _guard = lock_env();
+            let _model = EnvVarGuard::set("ANTHROPIC_MODEL", Some("claude-test"));
+            let provider = ClaudeProvider::new("k".to_string(), Client::new());
+            assert_provider_model_and_endpoint(
+                provider,
+                "claude-test",
+                "https://api.anthropic.com/v1",
+            );
+        }
+
+        {
+            let _guard = lock_env();
+            let _model = EnvVarGuard::set("ANTHROPIC_MODEL", None);
+            let provider = ClaudeProvider::new("k".to_string(), Client::new());
+            assert_provider_model_and_endpoint(
+                provider,
+                "claude-opus-4-6",
+                "https://api.anthropic.com/v1",
+            );
+        }
+    }
+
+    #[test]
+    fn openai_provider_prefers_env_model_and_fallback_on_missing() {
+        {
+            let _guard = lock_env();
+            let _model = EnvVarGuard::set("OPENAI_MODEL", Some("gpt-test"));
+            let provider = OpenAIProvider::new("k".to_string(), Client::new());
+            assert_provider_model_and_endpoint(
+                provider,
+                "gpt-test",
+                "https://api.openai.com/v1",
+            );
+        }
+
+        {
+            let _guard = lock_env();
+            let _model = EnvVarGuard::set("OPENAI_MODEL", None);
+            let provider = OpenAIProvider::new("k".to_string(), Client::new());
+            assert_provider_model_and_endpoint(
+                provider,
+                "gpt-5.4",
+                "https://api.openai.com/v1",
+            );
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct AnthropicBlock {
     #[serde(rename = "type")]

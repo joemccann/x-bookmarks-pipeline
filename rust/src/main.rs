@@ -193,3 +193,77 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = env::var(key).ok();
+            match value {
+                Some(value) => env::set_var(key, value),
+                None => env::remove_var(key),
+            }
+            EnvVarGuard { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.clone() {
+                Some(previous) => env::set_var(self.key, previous),
+                None => env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap()
+    }
+
+    #[test]
+    fn require_env_prefers_primary_key_before_aliases() {
+        let _lock = lock_env();
+        let _primary = EnvVarGuard::set("XPB_ENV_TEST_PRIMARY", Some("primary-key"));
+        let _alias = EnvVarGuard::set("XPB_ENV_TEST_ALIAS", Some("alias-key"));
+        let value = require_env("XPB_ENV_TEST_PRIMARY", &["XPB_ENV_TEST_ALIAS"]).unwrap();
+        assert_eq!(value, "primary-key");
+    }
+
+    #[test]
+    fn require_env_falls_back_to_alias_when_primary_missing() {
+        let _lock = lock_env();
+        let _primary = EnvVarGuard::set("XPB_ENV_TEST_PRIMARY", None);
+        let _alias = EnvVarGuard::set("XPB_ENV_TEST_ALIAS", Some("alias-key"));
+        let value = require_env("XPB_ENV_TEST_PRIMARY", &["XPB_ENV_TEST_ALIAS"]).unwrap();
+        assert_eq!(value, "alias-key");
+    }
+
+    #[test]
+    fn require_env_errors_when_required_keys_missing() {
+        let _lock = lock_env();
+        let _primary = EnvVarGuard::set("XPB_ENV_TEST_PRIMARY", None);
+        let _alias = EnvVarGuard::set("XPB_ENV_TEST_ALIAS", None);
+        let err = require_env("XPB_ENV_TEST_PRIMARY", &["XPB_ENV_TEST_ALIAS"]).unwrap_err();
+        assert!(err.to_string().contains("missing required env var"));
+    }
+
+    #[test]
+    fn env_any_prefers_first_non_empty() {
+        let _lock = lock_env();
+        let _first = EnvVarGuard::set("XPB_ENV_TEST_ANY_FIRST", Some(""));
+        let _second = EnvVarGuard::set("XPB_ENV_TEST_ANY_SECOND", Some("winner"));
+        let value = env_any(&["XPB_ENV_TEST_ANY_FIRST", "XPB_ENV_TEST_ANY_SECOND"]).unwrap();
+        assert_eq!(value, "winner");
+    }
+}
