@@ -1,6 +1,7 @@
-use rusqlite::Error as RusqliteError;
 use reqwest::Error as ReqwestError;
+use rusqlite::Error as RusqliteError;
 use serde_json::Error as SerdeJsonError;
+use std::io;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -10,39 +11,52 @@ pub enum PipelineError {
         provider: String,
         timeout_ms: u64,
     },
+
     #[error("sqlite lock while {operation} after {attempts} attempts")]
     SqliteLock {
         operation: String,
         attempts: u32,
     },
-    #[error("sqlite cache failure during {details}")]
+
+    #[error("cache failure during {details}")]
     Cache {
         details: String,
     },
+
     #[error("sqlite lock was poisoned: {details}")]
     CachePoisoned {
         details: String,
     },
+
     #[error("validation rejected Pine Script: {details}")]
     PineValidation {
         details: String,
     },
+
     #[error("http request failed for {operation}: {details}")]
     Http {
         operation: String,
         details: String,
     },
+
     #[error("provider {provider} returned invalid payload: {details}")]
     ProviderResponse {
         provider: String,
         details: String,
     },
+
     #[error("email notification failed: {details}")]
     Email {
         details: String,
     },
+
     #[error("task join failed: {details}")]
     TaskJoin {
+        details: String,
+    },
+
+    #[error("file write failed: {details}")]
+    Io {
         details: String,
     },
 }
@@ -81,9 +95,9 @@ impl From<SerdeJsonError> for PipelineError {
     }
 }
 
-impl From<std::io::Error> for PipelineError {
-    fn from(err: std::io::Error) -> Self {
-        PipelineError::Cache {
+impl From<io::Error> for PipelineError {
+    fn from(err: io::Error) -> Self {
+        PipelineError::Io {
             details: err.to_string(),
         }
     }

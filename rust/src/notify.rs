@@ -1,5 +1,4 @@
 use crate::error::{PipelineError, PipelineResult};
-use crate::models::FinalScript;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
@@ -24,15 +23,10 @@ impl SmtpNotifier {
         Self { config }
     }
 
-    pub async fn send_meta_saved(&self, script: &FinalScript) -> PipelineResult<()> {
+    pub async fn send_meta_saved(&self, meta_path: &str) -> PipelineResult<()> {
         let config = self.config.clone();
-        let subject = format!("Bookmark {} processed", script.bookmark_id);
-        let body = format!(
-            "Bookmark ID: {}\nCategory: {}\nConfidence: {:.2}\n",
-            script.bookmark_id,
-            script.meta.classification.category,
-            script.meta.classification.confidence
-        );
+        let subject = format!("Bookmark meta saved: {meta_path}");
+        let body = format!("Meta file written: {meta_path}");
 
         tokio::task::spawn_blocking(move || Self::send_sync(config, &subject, &body))
             .await

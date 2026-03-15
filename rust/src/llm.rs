@@ -1,24 +1,38 @@
 use crate::error::PipelineError;
 use crate::models::{
-    ClassificationInput, ClassificationOutput, CodeGenInput, CodeGenOutput, ImageAnalysisInput,
+    ClassificationInput, ClassificationResult, CodeGenInput, CodeGenOutput, ImageAnalysisInput,
     ImageAnalysisOutput,
 };
-use reqwest::Client;
+use reqwest::{header::CONTENT_TYPE, Client};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{self, json, Value};
-use std::{future::Future, pin::Pin, time::Duration};
+use serde_json::{json, Value};
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
 
 pub type LlmFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, PipelineError>> + Send + 'a>>;
 
 pub trait LLMProvider: Send + Sync {
     fn name(&self) -> &'static str;
-    fn classify<'a>(&'a self, input: ClassificationInput) -> LlmFuture<'a, ClassificationOutput>;
+
+    fn classify<'a>(
+        &'a self,
+        input: ClassificationInput,
+        system_prompt: &'a str,
+    ) -> LlmFuture<'a, ClassificationResult>;
+
     fn analyze_image<'a>(
         &'a self,
         input: ImageAnalysisInput,
+        system_prompt: &'a str,
     ) -> LlmFuture<'a, ImageAnalysisOutput>;
-    fn generate_code<'a>(&'a self, input: CodeGenInput) -> LlmFuture<'a, CodeGenOutput>;
+
+    fn generate_code<'a>(&'a self, input: CodeGenInput, system_prompt: &'a str)
+    -> LlmFuture<'a, CodeGenOutput>;
+
+    fn complete_json<'a>(&'a self, system_prompt: &'a str, user_prompt: &'a str)
+    -> LlmFuture<'a, String>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -34,7 +48,7 @@ pub struct BaseLLMProvider {
     api_path: String,
     api_key: String,
     model: String,
-    timeout: Duration,
+    timeout_ms: u64,
     client: Client,
     flavor: ApiFlavor,
 }
@@ -42,20 +56,20 @@ pub struct BaseLLMProvider {
 impl BaseLLMProvider {
     pub(crate) fn new(
         name: &'static str,
-        endpoint: String,
-        api_path: String,
-        api_key: String,
-        model: String,
+        endpoint: impl Into<String>,
+        api_path: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
         flavor: ApiFlavor,
         client: Client,
     ) -> Self {
         Self {
             name,
-            endpoint: endpoint.trim_end_matches('/').to_string(),
-            api_path: api_path.trim_start_matches('/').to_string(),
-            api_key,
-            model,
-            timeout: Duration::from_secs(30),
+            endpoint: endpoint.into().trim_end_matches('/').to_string(),
+            api_path: api_path.into().trim_start_matches('/').to_string(),
+            api_key: api_key.into(),
+            model: model.into(),
+            timeout_ms: 120_000,
             client,
             flavor,
         }
@@ -65,107 +79,143 @@ impl BaseLLMProvider {
         format!("{}/{}", self.endpoint, self.api_path)
     }
 
-    fn request_text<'a>(&'a self, operation: &'a str, payload: Value) -> LlmFuture<'a, String> {
-        let request_payload = self.build_request_payload(operation, payload);
-        let client = self.client.clone();
-        let url = self.endpoint_url();
-        let provider = self.name.to_string();
-        let timeout = self.timeout;
-        let api_key = self.api_key.clone();
-        let flavor = self.flavor;
-
-        Box::pin(async move {
-            let mut request = client.post(url).timeout(timeout).json(&request_payload);
-            request = match flavor {
-                ApiFlavor::OpenAiCompatible => request.bearer_auth(api_key),
-                ApiFlavor::Anthropic => request
-                    .header("x-api-key", api_key)
-                    .header("anthropic-version", "2023-06-01"),
-            };
-
-            let response = request
-                .send()
-                .await
-                .map_err(|err| PipelineError::Http {
-                    operation: format!("{provider}:{operation}"),
-                    details: err.to_string(),
-                })?;
-
-            let status = response.status();
-            let body = response.text().await?;
-            if !status.is_success() {
-                return Err(PipelineError::ProviderResponse {
-                    provider: provider.clone(),
-                    details: format!("status={status}, body={body}"),
-                });
-            }
-
-            let content = match flavor {
-                ApiFlavor::OpenAiCompatible => {
-                    let envelope: OpenAiChatResponse = serde_json::from_str(&body).map_err(|err| {
-                        PipelineError::ProviderResponse {
-                            provider: provider.clone(),
-                            details: format!("invalid OpenAI payload: {err}"),
-                        }
-                    })?;
-                    let Some(choice) = envelope.choices.into_iter().next() else {
-                        return Err(PipelineError::ProviderResponse {
-                            provider: provider.clone(),
-                            details: "empty model choices".to_string(),
-                        });
-                    };
-                    choice.message.content.unwrap_or_default()
-                }
-                ApiFlavor::Anthropic => {
-                    let envelope: AnthropicResponse = serde_json::from_str(&body).map_err(|err| {
-                        PipelineError::ProviderResponse {
-                            provider: provider.clone(),
-                            details: format!("invalid Anthropic payload: {err}"),
-                        }
-                    })?;
-                    let mut out = String::new();
-                    for block in envelope.content {
-                        if block.kind == "text" {
-                            out.push_str(&block.text);
-                        }
-                    }
-                    out
-                }
-            };
-
-            Ok(normalize_llm_content(content))
-        })
-    }
-
-    fn build_request_payload(&self, operation: &str, payload: Value) -> Value {
-        let system_prompt = system_prompt(operation);
-        let user_prompt = user_prompt(operation, &payload);
-
+    fn build_payload(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        with_json_object: bool,
+        image_urls: Option<&[String]>,
+    ) -> Value {
         match self.flavor {
             ApiFlavor::OpenAiCompatible => {
-                let mut request = json!({
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "max_completion_tokens": 1536,
-                });
+                let mut messages = Vec::new();
+                messages.push(json!({"role": "system", "content": system_prompt}));
 
-                if operation != "generate_code" {
-                    request["response_format"] = json!({"type": "json_object"});
+                if let Some(urls) = image_urls.filter(|urls| !urls.is_empty()) {
+                    let mut content = Vec::<Value>::new();
+                    content.push(json!({"type": "text", "text": user_prompt}));
+                    for url in urls {
+                        content.push(json!({
+                            "type": "image_url",
+                            "image_url": {"url": url}
+                        }));
+                    }
+                    messages.push(json!({"role": "user", "content": content}));
+                } else {
+                    messages.push(json!({"role": "user", "content": user_prompt}));
                 }
-                request
+
+                let mut payload = json!({
+                    "model": self.model,
+                    "messages": messages,
+                    "max_completion_tokens": if with_json_object { 768 } else { 3072 },
+                });
+                if with_json_object {
+                    payload["response_format"] = json!({"type": "json_object"});
+                }
+                payload
             }
-            ApiFlavor::Anthropic => json!({
-                "model": self.model,
-                "system": system_prompt,
-                "messages": [
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_tokens": 1536,
-            }),
+            ApiFlavor::Anthropic => {
+                let user = if let Some(urls) = image_urls.filter(|urls| !urls.is_empty()) {
+                    let mut blocks = Vec::<Value>::new();
+                    blocks.push(json!({"type": "text", "text": user_prompt}));
+                    for url in urls {
+                        blocks.push(json!({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": url,
+                            },
+                        }));
+                    }
+                    json!(blocks)
+                } else {
+                    json!(user_prompt)
+                };
+                json!({
+                    "model": self.model,
+                    "system": system_prompt,
+                    "messages": [{
+                        "role": "user",
+                        "content": user,
+                    }],
+                    "max_tokens": 3072,
+                })
+            }
         }
+    }
+
+    fn extract_text_from_response(&self, body: &str) -> Result<String, PipelineError> {
+        match self.flavor {
+            ApiFlavor::OpenAiCompatible => {
+                let envelope: OpenAIChatResponse = serde_json::from_str(body)?;
+                let mut out = String::new();
+                for choice in envelope.choices {
+                    if let Some(content) = choice.message.content {
+                        out.push_str(&content);
+                    }
+                }
+                Ok(strip_markdown_fence(&out).to_string())
+            }
+            ApiFlavor::Anthropic => {
+                let envelope: AnthropicChatResponse = serde_json::from_str(body)?;
+                let mut out = String::new();
+                for block in envelope.content {
+                    if block.block_type == "text" {
+                        if let Some(text) = block.text {
+                            out.push_str(&text);
+                        }
+                    }
+                }
+                Ok(strip_markdown_fence(&out).to_string())
+            }
+        }
+    }
+
+    async fn request_text(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        with_json_object: bool,
+        image_urls: Option<&[String]>,
+    ) -> Result<String, PipelineError> {
+        let payload = self.build_payload(system_prompt, user_prompt, with_json_object, image_urls);
+        let request = match self.flavor {
+            ApiFlavor::OpenAiCompatible => self
+                .client
+                .post(self.endpoint_url())
+                .json(&payload)
+                .bearer_auth(&self.api_key)
+                .timeout(Duration::from_millis(self.timeout_ms)),
+            ApiFlavor::Anthropic => self
+                .client
+                .post(self.endpoint_url())
+                .json(&payload)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header(CONTENT_TYPE, "application/json")
+                .timeout(Duration::from_millis(self.timeout_ms)),
+        };
+
+        let response = request.send().await.map_err(|err| PipelineError::Http {
+            operation: format!("{}_request", self.name),
+            details: err.to_string(),
+        })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|err| PipelineError::Http {
+            operation: format!("{}_read", self.name),
+            details: err.to_string(),
+        })?;
+
+        if !status.is_success() {
+            return Err(PipelineError::Http {
+                operation: format!("{}_status", self.name),
+                details: format!("status={status}, body={body}"),
+            });
+        }
+
+        self.extract_text_from_response(&body)
     }
 }
 
@@ -174,82 +224,97 @@ impl LLMProvider for BaseLLMProvider {
         self.name
     }
 
-    fn classify<'a>(&'a self, input: ClassificationInput) -> LlmFuture<'a, ClassificationOutput> {
-        let payload = json!({ "bookmark": input.bookmark, "strategy_hint": input.strategy_hint });
+    fn classify<'a>(
+        &'a self,
+        input: ClassificationInput,
+        system_prompt: &'a str,
+    ) -> LlmFuture<'a, ClassificationResult> {
+        let body = serde_json::to_string(&json!({
+            "tweet_id": input.tweet_id,
+            "text": input.text,
+            "image_urls": input.image_urls,
+            "strategy_hint": input.strategy_hint,
+        }))
+        .unwrap_or_else(|_| "{}".to_string());
+
         Box::pin(async move {
-            let text = self.request_text("classify", payload).await?;
-            parse_with_fallback(
+            let text = self
+                .request_text(system_prompt, &body, true, None)
+                .await
+                .map_err(PipelineError::from)?;
+            let mut result = parse_with_fallback::<ClassificationResult>(
                 &text,
-                || ClassificationOutput {
-                    category: "other".to_string(),
+                ClassificationResult {
+                    tweet_id: input.tweet_id,
+                    is_finance: false,
                     confidence: 0.0,
-                    rationale: "fallback parse".to_string(),
+                    classification_source: "fallback".to_string(),
+                    has_trading_pattern: false,
+                    has_visual_data: false,
+                    category: "other".to_string(),
+                    subcategory: "general".to_string(),
+                    detected_topic: String::new(),
+                    summary: "fallback parse".to_string(),
+                    raw_text: String::new(),
+                    image_urls: Vec::new(),
                 },
             )
-            .or_else(|_| {
-                parse_with_fallback::<ClassificationOutput, _>(
-                    &normalize_jsonish(&text),
-                    || ClassificationOutput {
-                        category: "other".to_string(),
-                        confidence: 0.0,
-                        rationale: "fallback parse".to_string(),
-                    },
-                )
-            })
+            .map_err(PipelineError::from)?;
+            result.classification_source = if result.classification_source.is_empty() {
+                "provider".to_string()
+            } else {
+                result.classification_source
+            };
+            Ok(result)
         })
     }
 
     fn analyze_image<'a>(
         &'a self,
         input: ImageAnalysisInput,
+        system_prompt: &'a str,
     ) -> LlmFuture<'a, ImageAnalysisOutput> {
-        let payload = json!({
+        let body = serde_json::to_string(&json!({
             "bookmark_id": input.bookmark_id,
-            "image_url": input.image_url,
+            "image_urls": input.image_urls,
             "context": input.context,
-        });
+        }))
+        .unwrap_or_else(|_| "{}".to_string());
+        let image_urls = input.image_urls.clone();
+
         Box::pin(async move {
-            let text = self.request_text("analyze_image", payload).await?;
-            parse_with_fallback(
-                &text,
-                || ImageAnalysisOutput {
-                    signal: "unavailable".to_string(),
-                    summary: "fallback parse".to_string(),
-                    indicators: vec!["manual_review".to_string()],
-                    confidence: 0.1,
-                },
-            )
-            .or_else(|_| {
-                parse_with_fallback::<ImageAnalysisOutput, _>(
-                    &normalize_jsonish(&text),
-                    || ImageAnalysisOutput {
-                        signal: "unavailable".to_string(),
-                        summary: "fallback parse".to_string(),
-                        indicators: vec!["manual_review".to_string()],
-                        confidence: 0.1,
-                    },
-                )
-            })
+            let raw_json = self
+                .request_text(system_prompt, &body, true, Some(&image_urls))
+                .await
+                .map_err(PipelineError::from)?;
+            Ok(parse_image_output(&raw_json))
         })
     }
 
-    fn generate_code<'a>(&'a self, input: CodeGenInput) -> LlmFuture<'a, CodeGenOutput> {
-        let payload = json!({
-            "bookmark": input.bookmark,
-            "classification": input.classification,
-            "analysis": input.analysis,
-            "requirements": input.additional_requirements,
-        });
+    fn generate_code<'a>(
+        &'a self,
+        input: CodeGenInput,
+        system_prompt: &'a str,
+    ) -> LlmFuture<'a, CodeGenOutput> {
+        let body = serde_json::to_string(&input.plan).unwrap_or_else(|_| "{}".to_string());
         Box::pin(async move {
-            let text = self.request_text("generate_code", payload).await?;
-            parse_generated_code(&text).or_else(|_| {
-                let code = ensure_pinescript_wrappers(extract_script_like_block(&text));
-                Ok(CodeGenOutput {
-                    pine_script: code,
-                    confidence: 0.25,
-                    notes: vec!["fallback extraction".to_string()],
-                })
-            })
+            let text = self
+                .request_text(system_prompt, &body, false, None)
+                .await
+                .map_err(PipelineError::from)?;
+            Ok(parse_generated_code(&text).unwrap_or_else(|| CodeGenOutput {
+                pine_script: text,
+                confidence: 0.5,
+                notes: vec!["fallback code".to_string()],
+            }))
+        })
+    }
+
+    fn complete_json<'a>(&'a self, system_prompt: &'a str, user_prompt: &'a str) -> LlmFuture<'a, String> {
+        Box::pin(async move {
+            self.request_text(system_prompt, user_prompt, true, None)
+                .await
+                .map_err(PipelineError::from)
         })
     }
 }
@@ -279,11 +344,10 @@ impl CerebrasProvider {
         Self {
             inner: BaseLLMProvider::new(
                 "cerebras",
-                "https://api.cerebras.ai/v1".to_string(),
-                "chat/completions".to_string(),
+                "https://api.cerebras.ai/v1",
+                "chat/completions",
                 api_key,
-                std::env::var("CEREBRAS_MODEL")
-                    .unwrap_or_else(|_| "qwen-3-235b-a22b-instruct-2507".to_string()),
+                std::env::var("CEREBRAS_MODEL").unwrap_or_else(|_| "qwen-3-235b-a22b-instruct-2507".to_string()),
                 ApiFlavor::OpenAiCompatible,
                 client,
             ),
@@ -296,11 +360,10 @@ impl XaiProvider {
         Self {
             inner: BaseLLMProvider::new(
                 "xai",
-                "https://api.x.ai/v1".to_string(),
-                "chat/completions".to_string(),
+                "https://api.x.ai/v1",
+                "chat/completions",
                 api_key,
-                std::env::var("XAI_MODEL")
-                    .unwrap_or_else(|_| "grok-4-0709".to_string()),
+                std::env::var("XAI_MODEL").unwrap_or_else(|_| "grok-4-0709".to_string()),
                 ApiFlavor::OpenAiCompatible,
                 client,
             ),
@@ -313,11 +376,10 @@ impl ClaudeProvider {
         Self {
             inner: BaseLLMProvider::new(
                 "claude",
-                "https://api.anthropic.com/v1".to_string(),
-                "messages".to_string(),
+                "https://api.anthropic.com/v1",
+                "messages",
                 api_key,
-                std::env::var("ANTHROPIC_MODEL")
-                    .unwrap_or_else(|_| "claude-opus-4-6".to_string()),
+                std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-opus-4-6".to_string()),
                 ApiFlavor::Anthropic,
                 client,
             ),
@@ -330,10 +392,10 @@ impl OpenAIProvider {
         Self {
             inner: BaseLLMProvider::new(
                 "openai",
-                "https://api.openai.com/v1".to_string(),
-                "chat/completions".to_string(),
+                "https://api.openai.com/v1",
+                "chat/completions",
                 api_key,
-                std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+                std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-5.4".to_string()),
                 ApiFlavor::OpenAiCompatible,
                 client,
             ),
@@ -341,166 +403,180 @@ impl OpenAIProvider {
     }
 }
 
-impl LLMProvider for CerebrasProvider {
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
+macro_rules! delegate_provider {
+    ($name:ident) => {
+        impl LLMProvider for $name {
+            fn name(&self) -> &'static str {
+                self.inner.name()
+            }
 
-    fn classify<'a>(&'a self, input: ClassificationInput) -> LlmFuture<'a, ClassificationOutput> {
-        self.inner.classify(input)
-    }
+            fn classify<'a>(
+                &'a self,
+                input: ClassificationInput,
+                system_prompt: &'a str,
+            ) -> LlmFuture<'a, ClassificationResult> {
+                self.inner.classify(input, system_prompt)
+            }
 
-    fn analyze_image<'a>(
-        &'a self,
-        input: ImageAnalysisInput,
-    ) -> LlmFuture<'a, ImageAnalysisOutput> {
-        self.inner.analyze_image(input)
-    }
+            fn analyze_image<'a>(
+                &'a self,
+                input: ImageAnalysisInput,
+                system_prompt: &'a str,
+            ) -> LlmFuture<'a, ImageAnalysisOutput> {
+                self.inner.analyze_image(input, system_prompt)
+            }
 
-    fn generate_code<'a>(&'a self, input: CodeGenInput) -> LlmFuture<'a, CodeGenOutput> {
-        self.inner.generate_code(input)
-    }
+            fn generate_code<'a>(
+                &'a self,
+                input: CodeGenInput,
+                system_prompt: &'a str,
+            ) -> LlmFuture<'a, CodeGenOutput> {
+                self.inner.generate_code(input, system_prompt)
+            }
+
+            fn complete_json<'a>(
+                &'a self,
+                system_prompt: &'a str,
+                user_prompt: &'a str,
+            ) -> LlmFuture<'a, String> {
+                self.inner.complete_json(system_prompt, user_prompt)
+            }
+        }
+    };
 }
 
-impl LLMProvider for XaiProvider {
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
-
-    fn classify<'a>(&'a self, input: ClassificationInput) -> LlmFuture<'a, ClassificationOutput> {
-        self.inner.classify(input)
-    }
-
-    fn analyze_image<'a>(
-        &'a self,
-        input: ImageAnalysisInput,
-    ) -> LlmFuture<'a, ImageAnalysisOutput> {
-        self.inner.analyze_image(input)
-    }
-
-    fn generate_code<'a>(&'a self, input: CodeGenInput) -> LlmFuture<'a, CodeGenOutput> {
-        self.inner.generate_code(input)
-    }
-}
-
-impl LLMProvider for ClaudeProvider {
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
-
-    fn classify<'a>(&'a self, input: ClassificationInput) -> LlmFuture<'a, ClassificationOutput> {
-        self.inner.classify(input)
-    }
-
-    fn analyze_image<'a>(
-        &'a self,
-        input: ImageAnalysisInput,
-    ) -> LlmFuture<'a, ImageAnalysisOutput> {
-        self.inner.analyze_image(input)
-    }
-
-    fn generate_code<'a>(&'a self, input: CodeGenInput) -> LlmFuture<'a, CodeGenOutput> {
-        self.inner.generate_code(input)
-    }
-}
-
-impl LLMProvider for OpenAIProvider {
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
-
-    fn classify<'a>(&'a self, input: ClassificationInput) -> LlmFuture<'a, ClassificationOutput> {
-        self.inner.classify(input)
-    }
-
-    fn analyze_image<'a>(
-        &'a self,
-        input: ImageAnalysisInput,
-    ) -> LlmFuture<'a, ImageAnalysisOutput> {
-        self.inner.analyze_image(input)
-    }
-
-    fn generate_code<'a>(&'a self, input: CodeGenInput) -> LlmFuture<'a, CodeGenOutput> {
-        self.inner.generate_code(input)
-    }
-}
+delegate_provider!(CerebrasProvider);
+delegate_provider!(XaiProvider);
+delegate_provider!(ClaudeProvider);
+delegate_provider!(OpenAIProvider);
 
 #[derive(Debug, Serialize, Deserialize)]
-struct OpenAiChoiceMessage {
+struct OpenAIMessage {
     content: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiChoiceMessage,
+struct OpenAIChoice {
+    message: OpenAIMessage,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct OpenAiChatResponse {
-    choices: Vec<OpenAiChoice>,
+struct OpenAIChatResponse {
+    choices: Vec<OpenAIChoice>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct AnthropicContent {
+struct AnthropicBlock {
     #[serde(rename = "type")]
-    kind: String,
-    text: String,
+    block_type: String,
+    text: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct AnthropicResponse {
-    content: Vec<AnthropicContent>,
+struct AnthropicChatResponse {
+    content: Vec<AnthropicBlock>,
 }
 
-fn system_prompt(operation: &str) -> &'static str {
-    match operation {
-        "classify" => {
-            "Return JSON only. Schema: {\"category\": string, \"confidence\": float, \"rationale\": string}."
-        }
-        "analyze_image" => {
-            "Return JSON only. Schema: {\"signal\": string, \"summary\": string, \"indicators\": [string], \"confidence\": float}."
-        }
-        "generate_code" => {
-            "Produce valid Pine Script v6. Return only JSON with fields: pine_script string, confidence float, notes array[string]. pine_script must start with //@version=6 and contain strategy() or indicator()."
-        }
-        _ => "Return JSON only.",
+fn parse_generated_code(text: &str) -> Option<CodeGenOutput> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-}
 
-fn user_prompt(operation: &str, payload: &Value) -> String {
-    match operation {
-        "classify" => {
-            format!(
-                "Classify this bookmark for finance/trading readiness.\nInput:\n{}",
-                serde_json::to_string_pretty(payload).unwrap_or_else(|_| "{}".to_string())
-            )
-        }
-        "analyze_image" => {
-            format!(
-                "Analyze this chart/visual context. Return technical trading signal, indicators, and confidence.\nInput:\n{}",
-                serde_json::to_string_pretty(payload).unwrap_or_else(|_| "{}".to_string())
-            )
-        }
-        "generate_code" => {
-            format!(
-                "Generate a Pine Script v6 strategy/indicator. Prefer concise, production-safe code.\nInput:\n{}",
-                serde_json::to_string_pretty(payload).unwrap_or_else(|_| "{}".to_string())
-            )
-        }
-        _ => serde_json::to_string_pretty(payload).unwrap_or_else(|_| "{}".to_string()),
+    if let Ok(output) = serde_json::from_str::<CodeGenOutput>(trimmed) {
+        return Some(output);
     }
-}
 
-fn normalize_llm_content(raw: String) -> String {
-    strip_markdown_fence(raw.trim()).to_string()
-}
+    if let Some(json_like) = extract_json_like(trimmed) {
+        if let Ok(output) = serde_json::from_str::<CodeGenOutput>(json_like) {
+            return Some(output);
+        }
+    }
 
-fn normalize_jsonish(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if let Some((start, end)) = find_outer_json_object(trimmed) {
-        trimmed[start..=end].to_string()
+    if let Some(code_block) = extract_code_block(trimmed) {
+        return Some(CodeGenOutput {
+            pine_script: ensure_version_prefix(code_block),
+            confidence: 0.5,
+            notes: vec!["raw_codeblock".to_string()],
+        });
+    }
+
+    if trimmed.contains("//@version=6") || trimmed.contains("strategy(") || trimmed.contains("indicator(") {
+        Some(CodeGenOutput {
+            pine_script: ensure_version_prefix(trimmed),
+            confidence: 0.5,
+            notes: vec!["raw_code".to_string()],
+        })
     } else {
+        None
+    }
+}
+
+fn parse_with_fallback<T>(text: &str, fallback: T) -> Result<T, PipelineError>
+where
+    T: DeserializeOwned,
+{
+    if let Ok(v) = serde_json::from_str::<T>(text) {
+        return Ok(v);
+    }
+    if let Some(json_like) = extract_json_like(text) {
+        if let Ok(v) = serde_json::from_str::<T>(json_like) {
+            return Ok(v);
+        }
+    }
+    Ok(fallback)
+}
+
+fn parse_image_output(raw: &str) -> ImageAnalysisOutput {
+    let indicators = parse_string_array(raw, "indicators");
+    let notes = parse_string_array(raw, "notes");
+    let notes = if notes.is_empty() && indicators.is_empty() {
+        vec!["No structured output parsed".to_string()]
+    } else {
+        notes
+    };
+
+    ImageAnalysisOutput {
+        raw_json: raw.to_string(),
+        indicators,
+        notes,
+    }
+}
+
+fn parse_string_array(raw: &str, key: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| value.get(key).and_then(|value| value.as_array()).map(|items| {
+            items
+                .iter()
+                .filter_map(|entry| entry.as_str().map(ToString::to_string))
+                .collect()
+        }))
+        .unwrap_or_default()
+}
+
+fn extract_json_like(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    (end > start).then_some(&text[start..=end])
+}
+
+fn extract_code_block(text: &str) -> Option<&str> {
+    let start = text.find("```")?;
+    let rest = &text[start + 3..];
+    let end = rest.find("```")?;
+    let body = &rest[..end];
+    Some(body.trim())
+}
+
+fn ensure_version_prefix(script: &str) -> String {
+    let trimmed = script.trim();
+    if trimmed.starts_with("//@version=6") {
         trimmed.to_string()
+    } else if trimmed.contains("strategy(") || trimmed.contains("indicator(") {
+        format!("//@version=6\n{trimmed}")
+    } else {
+        format!("//@version=6\nstrategy(\"Generated\", overlay=true)\n{trimmed}")
     }
 }
 
@@ -510,144 +586,20 @@ fn strip_markdown_fence(value: &str) -> String {
         return trimmed.to_string();
     }
 
+    let mut seen_open = false;
     let mut out = String::new();
-    let mut started = false;
     for line in trimmed.lines() {
-        if line.trim().starts_with("```") {
-            if !started {
-                started = true;
+        if line.starts_with("```") {
+            if !seen_open {
+                seen_open = true;
                 continue;
             }
             break;
         }
-        if started {
+        if seen_open {
             out.push_str(line);
             out.push('\n');
         }
     }
     out.trim().to_string()
-}
-
-fn parse_with_fallback<T, F>(text: &str, fallback: F) -> Result<T, PipelineError>
-where
-    T: DeserializeOwned + 'static,
-    F: Fn() -> T,
-{
-    if let Ok(payload) = serde_json::from_str::<T>(text) {
-        return Ok(payload);
-    }
-
-    if let Some((start, end)) = find_outer_json_object(text) {
-        if let Ok(payload) = serde_json::from_str::<T>(&text[start..=end]) {
-            return Ok(payload);
-        }
-    }
-
-    Ok(fallback())
-}
-
-fn parse_generated_code(text: &str) -> Result<CodeGenOutput, PipelineError> {
-    if let Ok(mut payload) = serde_json::from_str::<CodeGenOutput>(text) {
-        payload.pine_script = ensure_pinescript_wrappers(payload.pine_script);
-        return Ok(payload);
-    }
-
-    if let Some((start, end)) = find_outer_json_object(text) {
-        if let Ok(mut payload) =
-            serde_json::from_str::<CodeGenOutput>(&text[start..=end].to_string())
-        {
-            payload.pine_script = ensure_pinescript_wrappers(payload.pine_script);
-            return Ok(payload);
-        }
-    }
-
-    let code = extract_script_like_block(text);
-    if code.trim().is_empty() {
-        return Err(PipelineError::ProviderResponse {
-            provider: "generate_code".to_string(),
-            details: "Could not parse model output".to_string(),
-        });
-    }
-    Ok(CodeGenOutput {
-        pine_script: ensure_pinescript_wrappers(code),
-        confidence: 0.2,
-        notes: vec!["fallback extraction".to_string()],
-    })
-}
-
-fn extract_script_like_block(text: &str) -> String {
-    let candidate = strip_markdown_fence(text).trim().to_string();
-    if candidate.starts_with("//@version") {
-        return candidate;
-    }
-    if let Some(start) = candidate.find("//@version") {
-        let maybe = candidate[start..].trim().to_string();
-        if !maybe.is_empty() {
-            return maybe;
-        }
-    }
-
-    if candidate.is_empty() {
-        return candidate;
-    }
-    if candidate.contains("strategy(") || candidate.contains("indicator(") || candidate.contains("study(") {
-        return candidate;
-    }
-
-    format!("//@version=6\nstrategy(\"Generated\", overlay=true)\n{}\nplot(close)\n", candidate)
-}
-
-fn ensure_pinescript_wrappers(script: String) -> String {
-    let mut out = script.trim().to_string();
-    if !out.starts_with("//@version=6") {
-        out = format!("//@version=6\n{}", out);
-    }
-
-    if !out.contains("strategy(") && !out.contains("indicator(") && !out.contains("study(") {
-        out = format!("//@version=6\nstrategy(\"Generated\", overlay=true)\n{}\n", out);
-    }
-    out
-}
-
-fn find_outer_json_object(value: &str) -> Option<(usize, usize)> {
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut start = None;
-
-    for (idx, ch) in value.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            match ch {
-                '\\' => escaped = true,
-                '"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-
-        match ch {
-            '"' => in_string = true,
-            '{' => {
-                if depth == 0 {
-                    start = Some(idx);
-                }
-                depth += 1;
-            }
-            '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                    if depth == 0 {
-                        return start.map(|s| (s, idx));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
 }

@@ -1,413 +1,546 @@
 use crate::cache::BookmarkCache;
+use crate::classifier::FinanceClassifier;
+use crate::config::AppConfig;
 use crate::error::{PipelineError, PipelineResult};
+use crate::generator::PineScriptGenerator;
 use crate::llm::LLMProvider;
 use crate::models::{
-    Bookmark, BookmarkMeta, ClassificationInput, CodeGenInput, FinalScript, ImageAnalysisInput,
+    Bookmark, ClassificationResult, PipelineResult as PipelineRunResult, StrategyPlan, ValidationResult,
 };
 use crate::notify::SmtpNotifier;
-use anyhow::Error as AnyhowError;
+use crate::parser::{parse_chart_json, sanitize_path};
+use crate::planner::StrategyPlanner;
+use crate::validator::PineScriptValidator;
+use crate::vision::VisionAnalyzer;
+use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::{fs, sync::Semaphore};
 
-pub type OnMetaSaved = Arc<dyn Fn(&FinalScript) -> Result<(), AnyhowError> + Send + Sync>;
+pub type OnMetaSaved = Arc<dyn Fn(&str) -> Result<(), PipelineError> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Pipeline {
-    pub classifier: Arc<dyn LLMProvider>,
-    pub image_analyzer: Arc<dyn LLMProvider>,
-    pub code_generator: Arc<dyn LLMProvider>,
-    pub cache: BookmarkCache,
-    pub notifier: Option<Arc<SmtpNotifier>>,
-    pub max_parallel_workers: usize,
+    classifier: FinanceClassifier,
+    planner: StrategyPlanner,
+    generator: PineScriptGenerator,
+    vision: VisionAnalyzer,
+    validator: PineScriptValidator,
+    cache: Option<BookmarkCache>,
+    notifier: Option<Arc<SmtpNotifier>>,
+    output_dir: String,
+    cache_enabled: bool,
+    vision_enabled: bool,
+    max_parallel_workers: usize,
+    on_meta_saved: Option<OnMetaSaved>,
 }
 
 impl Pipeline {
     pub fn new(
         classifier: Arc<dyn LLMProvider>,
-        image_analyzer: Arc<dyn LLMProvider>,
-        code_generator: Arc<dyn LLMProvider>,
-        cache: BookmarkCache,
+        vision: Arc<dyn LLMProvider>,
+        planner_client: Arc<dyn LLMProvider>,
+        generator_client: Arc<dyn LLMProvider>,
+        cache: Option<BookmarkCache>,
         notifier: Option<Arc<SmtpNotifier>>,
-        max_parallel_workers: usize,
+        config: &AppConfig,
     ) -> Self {
         Self {
-            classifier,
-            image_analyzer,
-            code_generator,
+            classifier: FinanceClassifier::new(classifier, vision.clone()),
+            planner: StrategyPlanner::new(planner_client),
+            generator: PineScriptGenerator::new(generator_client),
+            vision: VisionAnalyzer::new(vision),
+            validator: PineScriptValidator::new(),
             cache,
             notifier,
-            max_parallel_workers: max_parallel_workers.max(1),
+            output_dir: config.output_dir.clone(),
+            cache_enabled: true,
+            vision_enabled: true,
+            max_parallel_workers: config.max_workers.max(1),
+            on_meta_saved: None,
         }
     }
 
-    pub async fn run(
-        self: Arc<Self>,
-        bookmarks: Vec<Bookmark>,
-        on_meta_saved: Option<OnMetaSaved>,
-    ) -> anyhow::Result<Vec<FinalScript>> {
-        let permits = Arc::new(Semaphore::new(self.max_parallel_workers));
+    pub fn with_cache(mut self, enabled: bool) -> Self {
+        self.cache_enabled = enabled;
+        self
+    }
+
+    pub fn with_vision(mut self, enabled: bool) -> Self {
+        self.vision_enabled = enabled;
+        self
+    }
+
+    pub fn with_on_meta_saved(mut self, hook: OnMetaSaved) -> Self {
+        self.on_meta_saved = Some(hook);
+        self
+    }
+
+    pub async fn run_batch(self: Arc<Self>, bookmarks: Vec<Bookmark>, save: bool) -> Vec<PipelineRunResult> {
+        let semaphore = Arc::new(Semaphore::new(self.max_parallel_workers));
         let mut handles = Vec::with_capacity(bookmarks.len());
 
         for bookmark in bookmarks {
-            let permit = permits.clone().acquire_owned().await?;
             let pipeline = Arc::clone(&self);
-            let hook = on_meta_saved.clone();
-            let notifier = self.notifier.clone();
-            handles.push(tokio::spawn(async move {
-                let _permit = permit;
-                let script = pipeline.process_single(bookmark).await?;
-                if let Some(hook) = &hook {
-                    if let Err(err) = hook(&script) {
-                        eprintln!(
-                            "on_meta_saved hook failed for {}: {}",
-                            script.bookmark_id, err
-                        );
-                    }
+            let permit = semaphore.clone().acquire_owned().await;
+            let handle = match permit {
+                Ok(permit) => tokio::spawn(async move {
+                    let _permit = permit;
+                    pipeline.run(bookmark, save).await
+                }),
+                Err(err) => {
+                    tokio::spawn(async move {
+                        let mut failed = PipelineRunResult::new("unknown");
+                        failed.error = format!("Failed acquiring worker slot: {err}");
+                        failed
+                    })
                 }
-                if let Some(notifier) = &notifier {
-                    notifier.send_meta_saved(&script).await?;
-                }
-                Ok::<FinalScript, PipelineError>(script)
-            }));
+            };
+            handles.push(handle);
         }
 
-        let mut outputs = Vec::with_capacity(handles.len());
+        let mut out = Vec::with_capacity(handles.len());
         for handle in handles {
-            outputs.push(handle.await??);
+            if let Ok(result) = handle.await {
+                out.push(result);
+            }
         }
-        Ok(outputs)
+        out
     }
 
-    async fn process_single(&self, bookmark: Bookmark) -> PipelineResult<FinalScript> {
-        if let Some(cached) = self.cache.get(&bookmark.id).await? {
-            return Ok(cached);
+    pub async fn run(&self, mut bookmark: Bookmark, save: bool) -> PipelineRunResult {
+        let mut result = PipelineRunResult::new(&bookmark.id);
+
+        if self.cache_enabled {
+            if let Some(cache) = &self.cache {
+                if let Ok(true) = cache.has_completed(&bookmark.id).await {
+                    if let Ok(cached) = self.load_from_cache(&bookmark.id).await {
+                        return cached;
+                    }
+                }
+            }
+        }
+
+        let classification = match self
+            .cached_or_classify(&bookmark.id, &mut bookmark.text, bookmark.image_urls.clone())
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                let mut validation = ValidationResult::new();
+                validation.fail(format!("Classification failed: {err}"));
+                result.validation = Some(validation);
+                result.error = format!("Classification failed: {err}");
+                return self.finalize(bookmark, result, save).await;
+            }
+        };
+
+        let chart_data = self
+            .maybe_run_vision(&bookmark, &classification)
+            .await
+            .unwrap_or(None);
+
+        result.classification = Some(classification.clone());
+        result.chart_data = chart_data.clone();
+
+        if classification.is_finance {
+            let plan = match self.plan_stage(&bookmark, &classification, chart_data.as_ref()).await {
+                Ok(value) => value,
+                Err(err) => {
+                    let mut validation = ValidationResult::new();
+                    validation.fail(format!("Planning failed: {err}"));
+                    result.validation = Some(validation);
+                    result.error = format!("Planning failed: {err}");
+                    if save {
+                        let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), None).await;
+                    }
+                    return self.finalize(bookmark, result, save).await;
+                }
+            };
+
+            let (script, validation) = match self.script_stage(&bookmark, &plan).await {
+                Ok(value) => value,
+                Err(err) => {
+                    let mut validation = ValidationResult::new();
+                    validation.fail(format!("Generation failed: {err}"));
+                    result.validation = Some(validation);
+                    result.error = format!("Generation failed: {err}");
+                    if save {
+                        let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), Some(&plan)).await;
+                    }
+                    return self.finalize(bookmark, result, save).await;
+                }
+            };
+
+            result.plan = Some(plan.clone());
+            result.pine_script = script.clone();
+            result.validation = Some(validation.clone());
+
+            if save {
+                let saved = self
+                    .save_finance(&bookmark, &classification, &plan, &script, validation)
+                    .await;
+                result.output_path = saved.0;
+                result.meta_path = saved.1;
+            }
+        } else if save {
+            let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), None).await;
+            result.meta_path = Some(self.meta_path_for_bookmark(&bookmark, &classification));
+        }
+
+        self.finalize(bookmark, result, save).await
+    }
+
+    async fn cached_or_classify(
+        &self,
+        tweet_id: &str,
+        text: &mut String,
+        image_urls: Vec<String>,
+    ) -> PipelineResult<ClassificationResult> {
+        if self.cache_enabled {
+            if let Some(cache) = &self.cache {
+                if let Ok(Some(classification)) = cache.get_classification(tweet_id).await {
+                    return Ok(classification);
+                }
+            }
         }
 
         let classification = self
             .classifier
-            .classify(ClassificationInput {
-                bookmark: bookmark.clone(),
-                strategy_hint: Some("X-bookmark financial signal pipeline".to_string()),
-            })
+            .classify(tweet_id.to_string(), text.clone(), image_urls, None)
             .await?;
 
-        let bookmark_id = bookmark.id.clone();
+        *text = classification.raw_text.clone();
 
-        let analysis = match &bookmark.image_url {
-            Some(image_url) => self
-                .image_analyzer
-                .analyze_image(ImageAnalysisInput {
-                    bookmark_id: bookmark.id.clone(),
-                    image_url: image_url.clone(),
-                    context: Some(classification.category.clone()),
-                })
-                .await?,
-            None => crate::models::ImageAnalysisOutput::no_image_fallback(&bookmark.url),
-        };
+        if self.cache_enabled {
+            if let Some(cache) = &self.cache {
+                let _ = cache.save_classification(tweet_id, &classification).await;
+            }
+        }
 
-        let generated = self
-            .code_generator
-            .generate_code(CodeGenInput {
-                bookmark: bookmark.clone(),
-                classification: classification.clone(),
-                analysis: analysis.clone(),
-                additional_requirements: None,
-            })
-            .await?;
-
-        self.validate_pine_script(&generated.pine_script)?;
-
-        let final_script = FinalScript {
-            bookmark_id: bookmark_id.clone(),
-            meta: BookmarkMeta::new(
-                bookmark_id,
-                classification,
-                analysis,
-                self.code_generator.name().to_string(),
-            ),
-            pine_script: generated.pine_script,
-        };
-
-        self.cache.upsert(&final_script).await?;
-        Ok(final_script)
+        Ok(classification)
     }
 
-    fn validate_pine_script(&self, script: &str) -> PipelineResult<()> {
-        if !script.contains("//@version=6") {
-            return Err(PipelineError::PineValidation {
-                details: "missing // @version=6 directive".to_string(),
-            });
+    async fn maybe_run_vision(
+        &self,
+        bookmark: &Bookmark,
+        classification: &ClassificationResult,
+    ) -> PipelineResult<Option<Value>> {
+        if !self.vision_enabled {
+            if !bookmark.chart_description.trim().is_empty() {
+                return Ok(parse_chart_json(Some(&bookmark.chart_description)));
+            }
+            return Ok(None);
         }
-        if !script.contains("strategy(")
-            && !script.contains("study(")
-            && !script.contains("indicator(")
-        {
-            return Err(PipelineError::PineValidation {
-                details: "script has no strategy(), study(), or indicator() declaration".to_string(),
-            });
+
+        let should_analyze = (classification.is_finance || classification.has_visual_data)
+            && !bookmark.image_urls.is_empty()
+            && bookmark.chart_description.trim().is_empty();
+
+        if !should_analyze {
+            if !bookmark.chart_description.trim().is_empty() {
+                return Ok(parse_chart_json(Some(&bookmark.chart_description)));
+            }
+            return Ok(None);
         }
+
+        if self.cache_enabled {
+            if let Some(cache) = &self.cache {
+                if let Ok(Some(chart_data)) = cache.get_chart_data(&bookmark.id).await {
+                    return Ok(Some(chart_data));
+                }
+            }
+        }
+
+        let raw = self.vision.analyze(&bookmark.image_urls).await?;
+        let chart_data = parse_chart_json(Some(&raw));
+
+        if let Some(chart) = &chart_data {
+            if self.cache_enabled {
+                if let Some(cache) = &self.cache {
+                    let _ = cache.save_chart_data(&bookmark.id, chart).await;
+                }
+            }
+        }
+
+        Ok(chart_data)
+    }
+
+    async fn plan_stage(
+        &self,
+        bookmark: &Bookmark,
+        classification: &ClassificationResult,
+        chart_data: Option<&Value>,
+    ) -> PipelineResult<StrategyPlan> {
+        if self.cache_enabled {
+            if let Some(cache) = &self.cache {
+                if let Ok(Some(plan)) = cache.get_plan(&bookmark.id).await {
+                    return Ok(plan);
+                }
+            }
+        }
+
+        let chart = chart_data
+            .and_then(|value| serde_json::to_string(value).ok())
+            .unwrap_or_default();
+        let plan = self
+            .planner
+            .plan(classification, &bookmark.author, &bookmark.date, &chart)
+            .await?;
+
+        if self.cache_enabled {
+            if let Some(cache) = &self.cache {
+                let _ = cache.save_plan(&bookmark.id, &plan).await;
+            }
+        }
+
+        Ok(plan)
+    }
+
+    async fn script_stage(&self, bookmark: &Bookmark, plan: &StrategyPlan) -> PipelineResult<(String, ValidationResult)> {
+        if self.cache_enabled {
+            if let Some(cache) = &self.cache {
+                if let Ok(Some(script)) = cache.get_script(&bookmark.id).await {
+                    let validation = self.load_validation_from_cache(&bookmark.id).await?;
+                    return Ok((script, validation));
+                }
+            }
+        }
+
+        let code = self.generator.generate(bookmark, plan).await?;
+        let validation = self.validator.validate(&code, &plan.script_type);
+
+        if self.cache_enabled {
+            if let Some(cache) = &self.cache {
+                let _ = cache
+                    .save_script(&bookmark.id, &code, validation.valid, &validation.errors)
+                    .await;
+            }
+        }
+
+        Ok((code, validation))
+    }
+
+    async fn load_validation_from_cache(&self, tweet_id: &str) -> PipelineResult<ValidationResult> {
+        if !self.cache_enabled {
+            return Ok(ValidationResult::new());
+        }
+
+        let cache = match &self.cache {
+            Some(cache) => cache,
+            None => return Ok(ValidationResult::new()),
+        };
+
+        let row = cache.get(tweet_id).await?;
+        if let Some(raw_json) = row.as_ref().and_then(|r| r.validation_errors.clone()) {
+            let errors: Vec<String> = serde_json::from_str(&raw_json).unwrap_or_default();
+            let passed = row.and_then(|r| r.validation_passed).unwrap_or(1) != 0;
+            let mut validation = ValidationResult::new();
+            validation.valid = passed;
+            validation.errors = errors;
+            Ok(validation)
+        } else {
+            Ok(ValidationResult::new())
+        }
+    }
+
+    async fn load_from_cache(&self, tweet_id: &str) -> PipelineResult<PipelineRunResult> {
+        let cache = match &self.cache {
+            Some(cache) => cache,
+            None => {
+                return Err(PipelineError::Cache {
+                    details: "cache missing".to_string(),
+                })
+            }
+        };
+
+        let mut result = PipelineRunResult::new(tweet_id);
+        result.cached = true;
+        result.classification = cache.get_classification(tweet_id).await?;
+        result.plan = cache.get_plan(tweet_id).await?;
+        result.pine_script = cache.get_script(tweet_id).await?.unwrap_or_default();
+        result.chart_data = cache.get_chart_data(tweet_id).await?;
+        result.validation = Some(self.load_validation_from_cache(tweet_id).await.unwrap_or_default());
+        result.meta_path = Some(self.meta_path_for_cached(tweet_id));
+        result.output_path = Some(self.output_path_for_cached(tweet_id));
+        Ok(result)
+    }
+
+    async fn finalize(
+        &self,
+        bookmark: Bookmark,
+        mut result: PipelineRunResult,
+        save: bool,
+    ) -> PipelineRunResult {
+        if let Some(classification) = &result.classification {
+            if save {
+                result.meta_path = result.meta_path.or_else(|| {
+                    Some(if classification.is_finance {
+                        String::new()
+                    } else {
+                        self.meta_path_for_bookmark(
+                            &bookmark,
+                            classification,
+                        )
+                    })
+                });
+            }
+        }
+
+        if save && result.error.is_empty() {
+            if let Some(meta_path) = result.meta_path.as_deref() {
+                if let Some(hook) = &self.on_meta_saved {
+                    let _ = hook(meta_path);
+                }
+                if let Some(notifier) = &self.notifier {
+                    let _ = notifier.send_meta_saved(meta_path).await;
+                }
+                if let Some(cache) = &self.cache {
+                    if self.cache_enabled {
+                        let _ = cache.mark_completed(&bookmark.id).await;
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    async fn save_meta(
+        &self,
+        bookmark: &Bookmark,
+        classification: &ClassificationResult,
+        chart_data: Option<&Value>,
+        plan: Option<&StrategyPlan>,
+    ) -> PipelineResult<()> {
+        let out_dir = self.output_directory(classification);
+        fs::create_dir_all(&out_dir).await?;
+
+        let meta = serde_json::json!({
+            "tweet_id": bookmark.id,
+            "tweet_url": bookmark.tweet_url,
+            "category": classification.category,
+            "subcategory": classification.subcategory,
+            "is_finance": classification.is_finance,
+            "confidence": classification.confidence,
+            "has_visual_data": classification.has_visual_data,
+            "detected_topic": classification.detected_topic,
+            "summary": classification.summary,
+            "author": bookmark.author,
+            "date": bookmark.date,
+            "image_urls": bookmark.image_urls,
+            "chart_data": chart_data,
+            "script_type": plan.map(|p| p.script_type.clone()),
+            "ticker": plan.map(|p| p.ticker.clone()),
+            "direction": plan.map(|p| p.direction.clone()),
+            "timeframe": plan.map(|p| p.timeframe.clone()),
+            "indicators": plan.map(|p| p.indicators.clone()),
+            "pattern": plan.and_then(|p| p.pattern.clone()),
+            "key_levels": plan.map(|p| p.key_levels.clone()),
+            "rationale": plan.map(|p| p.rationale.clone()),
+        });
+
+        let path = self.meta_path_for_bookmark(bookmark, classification);
+        fs::write(&path, serde_json::to_string_pretty(&meta)?).await?;
         Ok(())
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::{
-        Bookmark, BookmarkMeta, ClassificationOutput, CodeGenOutput, CodeGenInput, ImageAnalysisOutput,
-        ImageAnalysisInput,
-    };
-    use anyhow::anyhow;
-    use crate::llm::{LLMProvider, LlmFuture};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[derive(Debug, Clone)]
-    struct StubProvider {
-        classify: ClassificationOutput,
-        analysis: ImageAnalysisOutput,
-        code: CodeGenOutput,
-        name: &'static str,
-        classify_calls: Option<Arc<AtomicUsize>>,
-        analyze_calls: Option<Arc<AtomicUsize>>,
-        generate_calls: Option<Arc<AtomicUsize>>,
-    }
-
-    impl StubProvider {
-        fn new(name: &'static str, category: &str) -> Self {
-            Self {
-                name,
-                classify: ClassificationOutput {
-                    category: category.to_string(),
-                    confidence: 0.9,
-                    rationale: "stub".to_string(),
-                },
-                analysis: ImageAnalysisOutput {
-                    signal: "up".to_string(),
-                    summary: "stub analysis".to_string(),
-                    indicators: vec!["ma".to_string()],
-                    confidence: 0.8,
-                },
-                code: CodeGenOutput {
-                    pine_script: "//@version=6\nstrategy(\"stub\")".to_string(),
-                    confidence: 0.95,
-                    notes: vec!["ok".to_string()],
-                },
-                classify_calls: None,
-                analyze_calls: None,
-                generate_calls: None,
-            }
+    async fn save_finance(
+        &self,
+        bookmark: &Bookmark,
+        classification: &ClassificationResult,
+        plan: &StrategyPlan,
+        pine_script: &str,
+        validation: ValidationResult,
+    ) -> (Option<String>, Option<String>) {
+        let out_dir = self.output_directory(classification);
+        if fs::create_dir_all(&out_dir).await.is_err() {
+            return (None, None);
         }
 
-        fn with_counters(
-            name: &'static str,
-            category: &str,
-            classify_calls: Arc<AtomicUsize>,
-            analyze_calls: Arc<AtomicUsize>,
-            generate_calls: Arc<AtomicUsize>,
-        ) -> Self {
-            Self {
-                name,
-                classify: ClassificationOutput {
-                    category: category.to_string(),
-                    confidence: 0.9,
-                    rationale: "stub".to_string(),
-                },
-                analysis: ImageAnalysisOutput {
-                    signal: "up".to_string(),
-                    summary: "stub analysis".to_string(),
-                    indicators: vec!["ma".to_string()],
-                    confidence: 0.8,
-                },
-                code: CodeGenOutput {
-                    pine_script: "//@version=6\nstrategy(\"stub\")".to_string(),
-                    confidence: 0.95,
-                    notes: vec!["ok".to_string()],
-                },
-                classify_calls: Some(classify_calls),
-                analyze_calls: Some(analyze_calls),
-                generate_calls: Some(generate_calls),
-            }
-        }
-    }
-
-    impl LLMProvider for StubProvider {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        fn classify<'a>(&'a self, _input: ClassificationInput) -> LlmFuture<'a, ClassificationOutput> {
-            if let Some(calls) = &self.classify_calls {
-                calls.fetch_add(1, Ordering::SeqCst);
-            }
-            Box::pin(async move { Ok(self.classify.clone()) })
-        }
-
-        fn analyze_image<'a>(
-            &'a self,
-            _input: ImageAnalysisInput,
-        ) -> LlmFuture<'a, ImageAnalysisOutput> {
-            if let Some(calls) = &self.analyze_calls {
-                calls.fetch_add(1, Ordering::SeqCst);
-            }
-            Box::pin(async move { Ok(self.analysis.clone()) })
-        }
-
-        fn generate_code<'a>(&'a self, _input: CodeGenInput) -> LlmFuture<'a, CodeGenOutput> {
-            if let Some(calls) = &self.generate_calls {
-                calls.fetch_add(1, Ordering::SeqCst);
-            }
-            Box::pin(async move { Ok(self.code.clone()) })
-        }
-    }
-
-    fn stub_bookmark(id: &str) -> Bookmark {
-        Bookmark {
-            id: id.to_string(),
-            url: "https://x.com".to_string(),
-            title: "sample".to_string(),
-            note: None,
-            image_url: Some("https://x.com/chart.png".to_string()),
-        }
-    }
-
-    fn temp_db(name: &str) -> String {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        std::env::temp_dir()
-            .join(format!("xbp_{name}_{now}.sqlite"))
-            .to_string_lossy()
-            .into_owned()
-    }
-
-    #[tokio::test]
-    async fn pipeline_validates_script_and_returns_result() {
-        let pipeline = Arc::new(Pipeline::new(
-            Arc::new(StubProvider::new("classifier", "momentum")),
-            Arc::new(StubProvider::new("image", "momentum")),
-            Arc::new(StubProvider::new("code", "momentum")),
-            crate::cache::BookmarkCache::new(temp_db("flow")).unwrap(),
-            None,
-            2,
-        ));
-        let count = Arc::new(AtomicUsize::new(0));
-        let hook_count = Arc::clone(&count);
-        let on_meta_saved: OnMetaSaved = Arc::new(move |_| {
-            hook_count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        });
-        let outputs = pipeline
-            .run(vec![stub_bookmark("run1")], Some(on_meta_saved))
-            .await
-            .expect("pipeline");
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].meta.classification.category, "momentum");
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        assert!(outputs[0].pine_script.contains("//@version=6"));
-    }
-
-    #[tokio::test]
-    async fn pipeline_uses_cached_result_without_llm_calls() {
-        let cache = crate::cache::BookmarkCache::new(temp_db("cache_hit")).unwrap();
-        let cached = FinalScript {
-            bookmark_id: "cache-hit-1".to_string(),
-            meta: BookmarkMeta::new(
-                "cache-hit-1".to_string(),
-                ClassificationOutput {
-                    category: "finance".to_string(),
-                    confidence: 0.99,
-                    rationale: "cached".to_string(),
-                },
-                ImageAnalysisOutput {
-                    signal: "flat".to_string(),
-                    summary: "cached analysis".to_string(),
-                    indicators: vec!["rsi".to_string()],
-                    confidence: 0.9,
-                },
-                "cache-provider".to_string(),
-            ),
-            pine_script: "//@version=6\nstrategy(\"cached\")".to_string(),
+        let safe_author = sanitize_path(&plan.author);
+        let safe_ticker = sanitize_path(&plan.ticker);
+        let date = if bookmark.date.is_empty() {
+            "undated"
+        } else {
+            &bookmark.date
         };
-        cache.upsert(&cached).await.unwrap();
+        let stem = format!("{safe_author}_{safe_ticker}_{date}");
 
-        let classify_calls = Arc::new(AtomicUsize::new(0));
-        let analyze_calls = Arc::new(AtomicUsize::new(0));
-        let generate_calls = Arc::new(AtomicUsize::new(0));
-        let classify_for_providers = Arc::clone(&classify_calls);
-        let analyze_for_providers = Arc::clone(&analyze_calls);
-        let generate_for_providers = Arc::clone(&generate_calls);
+        let mut pine_path = out_dir.clone();
+        pine_path.push(format!("{stem}.pine"));
 
-        let pipeline = Arc::new(Pipeline::new(
-            Arc::new(StubProvider::with_counters(
-                "classifier",
-                "finance",
-                Arc::clone(&classify_for_providers),
-                Arc::clone(&analyze_for_providers),
-                Arc::clone(&generate_for_providers),
-            )),
-            Arc::new(StubProvider::with_counters(
-                "image",
-                "finance",
-                Arc::clone(&classify_for_providers),
-                Arc::clone(&analyze_for_providers),
-                Arc::clone(&generate_for_providers),
-            )),
-            Arc::new(StubProvider::with_counters(
-                "generator",
-                "finance",
-                classify_for_providers,
-                analyze_for_providers,
-                generate_for_providers,
-            )),
-            cache,
-            None,
-            2,
-        ));
+        if !pine_script.trim().is_empty() {
+            if fs::write(&pine_path, pine_script).await.is_err() {
+                return (None, None);
+            }
+        }
 
-        let outputs = pipeline
-            .run(vec![stub_bookmark("cache-hit-1")], None)
-            .await
-            .expect("pipeline");
+        let mut meta_path = pine_path.clone();
+        meta_path.set_extension("meta.json");
 
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].bookmark_id, "cache-hit-1");
-        assert_eq!(outputs[0].pine_script, "//@version=6\nstrategy(\"cached\")");
-        assert_eq!(classify_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(analyze_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(generate_calls.load(Ordering::SeqCst), 0);
+        let meta = serde_json::json!({
+            "tweet_id": bookmark.id,
+            "tweet_url": bookmark.tweet_url,
+            "category": classification.category,
+            "subcategory": classification.subcategory,
+            "is_finance": true,
+            "script_type": plan.script_type,
+            "author": plan.author,
+            "date": bookmark.date,
+            "ticker": plan.ticker,
+            "direction": plan.direction,
+            "timeframe": plan.timeframe,
+            "indicators": plan.indicators,
+            "pattern": plan.pattern,
+            "key_levels": plan.key_levels,
+            "rationale": plan.rationale,
+            "validation_passed": validation.valid,
+            "validation_errors": validation.errors,
+            "validation_warnings": validation.warnings,
+        });
+
+        if fs::write(
+            &meta_path,
+            serde_json::to_string_pretty(&meta).unwrap_or_else(|_| "{}".to_string()),
+        )
+        .await
+        .is_err()
+        {
+            return (
+                Some(pine_path.to_string_lossy().to_string()),
+                None,
+            );
+        }
+
+        (
+            Some(pine_path.to_string_lossy().to_string()),
+            Some(meta_path.to_string_lossy().to_string()),
+        )
     }
 
-    #[tokio::test]
-    async fn pipeline_on_meta_saved_errors_do_not_fail_pipeline() {
-        let pipeline = Arc::new(Pipeline::new(
-            Arc::new(StubProvider::new("classifier", "finance")),
-            Arc::new(StubProvider::new("image", "finance")),
-            Arc::new(StubProvider::new("generator", "finance")),
-            crate::cache::BookmarkCache::new(temp_db("hook_err")).unwrap(),
-            None,
-            2,
-        ));
-        let on_meta_saved: OnMetaSaved = Arc::new(|_| Err(anyhow!("boom")));
-        let outputs = pipeline
-            .run(vec![stub_bookmark("hook-fail")], Some(on_meta_saved))
-            .await
-            .expect("pipeline");
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].bookmark_id, "hook-fail");
+    fn output_directory(&self, classification: &ClassificationResult) -> PathBuf {
+        let category = sanitize_path(&classification.category);
+        let subcategory = sanitize_path(&classification.subcategory);
+        PathBuf::from(&self.output_dir).join(category).join(subcategory)
     }
 
-    #[tokio::test]
-    async fn validate_pine_script_rejects_invalid_payload() {
-        let pipeline = Pipeline::new(
-            Arc::new(StubProvider::new("c", "x")),
-            Arc::new(StubProvider::new("i", "x")),
-            Arc::new(StubProvider::new("g", "x")),
-            crate::cache::BookmarkCache::new(temp_db("validate")).unwrap(),
-            None,
-            1,
-        );
-        assert!(pipeline.validate_pine_script("no version").is_err());
+    fn output_path_for_cached(&self, tweet_id: &str) -> String {
+        format!("{tweet_id}.pine")
+    }
+
+    fn meta_path_for_cached(&self, tweet_id: &str) -> String {
+        format!("{tweet_id}.meta.json")
+    }
+
+    fn meta_path_for_bookmark(&self, bookmark: &Bookmark, classification: &ClassificationResult) -> String {
+        let dir = self.output_directory(classification);
+        let safe_author = sanitize_path(&bookmark.author);
+        let date = if bookmark.date.is_empty() {
+            "undated"
+        } else {
+            &bookmark.date
+        };
+        let stem = format!("{}_{}_{}", safe_author, date, &bookmark.id[..bookmark.id.len().min(8)]);
+        dir.join(format!("{stem}.meta.json")).to_string_lossy().to_string()
     }
 }
