@@ -160,7 +160,7 @@ def run(
     """
     df = _build_dataframe(db_path)
     if df is None:
-        msg = "Missing market data — run: trading_main.py fetch"
+        msg = "Missing market data — run: bin/trading_main.py fetch"
         if verbose:
             print(f"  [{NAME}] {msg}")
         return {"signals": [], "backtest": {"error": msg}}

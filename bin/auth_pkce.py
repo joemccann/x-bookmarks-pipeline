@@ -7,7 +7,7 @@ captures the callback, exchanges the code for tokens, and prints
 the access token to paste into .env.
 
 Usage:
-    python auth_pkce.py
+    python bin/auth_pkce.py
 """
 
 from __future__ import annotations
@@ -28,7 +28,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Project root (repo root, one level up from bin/)
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(_PROJECT_DIR / ".env")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -108,7 +111,6 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
 # Token persistence helpers
 # ---------------------------------------------------------------------------
 
-_PROJECT_DIR = Path(__file__).resolve().parent
 _ENV_PATH = _PROJECT_DIR / ".env"
 _TOKEN_STATE_PATH = _PROJECT_DIR / ".token_state.json"
 

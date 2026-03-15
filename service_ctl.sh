@@ -158,7 +158,7 @@ cmd_reauth() {
     sleep 1
 
     _yellow "Opening browser for X OAuth PKCE flow..."
-    python3 "${SCRIPT_DIR}/auth_pkce.py"
+    python3 "${SCRIPT_DIR}/bin/auth_pkce.py"
 
     if [ $? -ne 0 ]; then
         _red "Authentication failed — daemon not restarted."

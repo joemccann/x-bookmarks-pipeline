@@ -10,13 +10,13 @@ Commands:
   signals   Show emitted indicator/strategy signals
 
 Examples:
-  python trading_main.py index
-  python trading_main.py fetch --tickers ^VIX,^VVIX,SPY,PSP,^MOVE
-  python trading_main.py run
-  python trading_main.py run --skip-fetch
-  python trading_main.py list --type strategy
-  python trading_main.py list --subcategory volatility
-  python trading_main.py signals --name vix_vvix_mean_reversion
+  python bin/trading_main.py index
+  python bin/trading_main.py fetch --tickers ^VIX,^VVIX,SPY,PSP,^MOVE
+  python bin/trading_main.py run
+  python bin/trading_main.py run --skip-fetch
+  python bin/trading_main.py list --type strategy
+  python bin/trading_main.py list --subcategory volatility
+  python bin/trading_main.py signals --name vix_vvix_mean_reversion
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 # Ensure trading/ package is importable when running from repo root
-sys.path.insert(0, str(Path(__file__).parent / "trading"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "trading"))
 
 from trading.config import SIGNALS_DB_PATH, DEFAULT_TICKERS
 from trading.db.schema import setup
@@ -72,7 +72,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         ticker=args.ticker,
     )
     if not rows:
-        print("No signals found. Run: python trading_main.py index")
+        print("No signals found. Run: python bin/trading_main.py index")
         return
 
     print(f"{'TYPE':<12} {'TICKER':<12} {'SUBCATEGORY':<20} {'AUTHOR':<20} {'DATE':<12} RATIONALE")
@@ -99,7 +99,7 @@ def cmd_signals(args: argparse.Namespace) -> None:
         start=args.start,
     )
     if not rows:
-        print("No emitted signals found. Run: python trading_main.py run")
+        print("No emitted signals found. Run: python bin/trading_main.py run")
         return
 
     print(f"{'NAME':<30} {'TICKER':<10} {'DATE':<12} {'VALUE':>10} {'DIR':<8} METADATA")
@@ -120,7 +120,7 @@ def cmd_signals(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="trading_main.py",
+        prog="bin/trading_main.py",
         description="Trading Engine — indicators and strategies from x-bookmarks-pipeline",
     )
     sub = parser.add_subparsers(dest="command", required=True)

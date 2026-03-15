@@ -9,7 +9,7 @@ Every bookmark gets classified with a `category`/`subcategory` and saved as `.me
 ## Tech Stack
 
 - Python 3.9+
-- Node.js (nodemailer) for email notifications (`scripts/notify.mjs`)
+- Node.js (nodemailer) for email notifications (`bin/notify.mjs`)
 - `httpx` for HTTP (all LLM API calls — no SDKs)
 - `rich` for CLI output formatting
 - `sqlite3` for bookmark caching
@@ -77,13 +77,12 @@ trading/                            # Trading engine (self-contained, extractabl
     │   └── vix_vvix_mean_reversion.py  # VIX>30+VVIX>125 buy SPY + backtesting.py backtest
     ├── indexer.py                  # Scan output/finance/ → finance_signals (+ upsert_one hook)
     └── runner.py                   # Orchestrate index → fetch → indicators → strategies
-trading_main.py                     # Trading engine CLI (index|fetch|run|list|signals)
-main.py                             # Pipeline CLI entrypoint
-service.py                          # launchd polling daemon (on_meta_saved hook + email notifications)
+bin/trading_main.py                 # Trading engine CLI (index|fetch|run|list|signals)
+bin/main.py                         # Pipeline CLI entrypoint
+bin/service.py                      # launchd polling daemon (on_meta_saved hook + email notifications)
 service_ctl.sh                      # Daemon management (install/start/stop/logs)
-auth_pkce.py                        # OAuth 2.0 PKCE token helper
-scripts/
-└── notify.mjs                      # Email notifier (Node.js/nodemailer) — two modes:
+bin/auth_pkce.py                    # OAuth 2.0 PKCE token helper
+bin/notify.mjs                      # Email notifier (Node.js/nodemailer) — two modes:
                                     #   --mode error   → token failure alert (sent once per run)
                                     #   --mode bookmarks → per-cycle digest (JSON via stdin)
 package.json                        # Node.js deps (nodemailer)
@@ -98,18 +97,18 @@ npm install                                                     # nodemailer (em
 pip install backtesting yfinance quantstats pandas-ta-classic  # trading engine extras
 
 # Fetch live bookmarks and process
-python3 main.py --fetch
-python3 main.py --fetch --max-results 20
+python3 bin/main.py --fetch
+python3 bin/main.py --fetch --max-results 20
 
 # From inline text
-python3 main.py --text "BTC breakout above \$42k" --author "handle" --date "2026-03-01"
+python3 bin/main.py --text "BTC breakout above \$42k" --author "handle" --date "2026-03-01"
 
 # From JSON bookmark file
-python3 main.py --file example_bookmark.json
+python3 bin/main.py --file example_bookmark.json
 
 # Cache management
-python3 main.py --cache-stats
-python3 main.py --clear-cache
+python3 bin/main.py --cache-stats
+python3 bin/main.py --clear-cache
 
 # Daemon mode (periodic polling)
 ./service_ctl.sh install   # launchd service (polls every 15 min)
@@ -117,11 +116,11 @@ python3 main.py --clear-cache
 ./service_ctl.sh status    # show PID + last exit
 
 # Trading engine
-python3 trading_main.py index              # index output/finance/ → signals.db
-python3 trading_main.py fetch              # fetch market data (VIX, VVIX, MOVE, SPY, PSP)
-python3 trading_main.py run                # run all indicators + strategies
-python3 trading_main.py list --type strategy
-python3 trading_main.py signals --name vix_vvix_mean_reversion
+python3 bin/trading_main.py index              # index output/finance/ → signals.db
+python3 bin/trading_main.py fetch              # fetch market data (VIX, VVIX, MOVE, SPY, PSP)
+python3 bin/trading_main.py run                # run all indicators + strategies
+python3 bin/trading_main.py list --type strategy
+python3 bin/trading_main.py signals --name vix_vvix_mean_reversion
 ```
 
 ## Environment Variables
@@ -231,7 +230,7 @@ Generated scripts must follow these rules (enforced by the system prompt, self-v
 
 ## Email Notifications
 
-`service.py` calls `scripts/notify.mjs` via subprocess after each poll cycle. The script is invoked with the Python process's environment (which includes `.env` vars loaded via `python-dotenv`).
+`bin/service.py` calls `bin/notify.mjs` via subprocess after each poll cycle. The script is invoked with the Python process's environment (which includes `.env` vars loaded via `python-dotenv`).
 
 - **Token error** (`--mode error`): sends a one-time alert when `X_REFRESH_TOKEN` is invalid. The `_error_notified` flag suppresses repeat alerts every 15 min until the token is fixed and a successful fetch occurs. Detects: `"Token refresh failed"` or `"token was invalid"` in the `FetchError` message.
 - **Bookmark digest** (`--mode bookmarks`): called whenever `poll_once` returns `processed_items` (i.e. `new > 0`). Payload is JSON piped to stdin: `{"bookmarks": [...], "cycle": N}`. Each item carries `author`, `tweet_url`, `text_excerpt`, `is_finance`, `category`, `subcategory`, `plan_title`, `valid`.

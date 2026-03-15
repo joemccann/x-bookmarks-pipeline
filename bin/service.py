@@ -5,7 +5,7 @@ X Bookmarks Pipeline — Background Service
 Periodically polls X API for new bookmarks and processes them through
 the multi-LLM pipeline (classify -> vision -> plan -> generate Pine Script).
 
-Designed to run standalone (python service.py) or via launchd.
+Designed to run standalone (python bin/service.py) or via launchd.
 
 Configuration (env vars):
     POLL_INTERVAL       — Seconds between polls (default: 900 = 15 min)
@@ -33,14 +33,14 @@ from typing import NoReturn
 # Load .env from the project directory before any src imports
 from dotenv import load_dotenv
 
-_PROJECT_DIR = Path(__file__).resolve().parent
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_DIR / ".env")
 
 from src.pipeline import MultiLLMPipeline, PipelineResult
 from src.fetchers.x_bookmark_fetcher import XBookmarkFetcher, FetchError
 from src.config import OUTPUT_DIR, MAX_WORKERS
 
-_SCRIPTS_DIR = _PROJECT_DIR / "scripts"
+_SCRIPTS_DIR = _PROJECT_DIR / "bin"
 
 # ---------------------------------------------------------------------------
 # Email notifications (via Node.js / nodemailer)
@@ -64,7 +64,7 @@ def _node_bin() -> str | None:
 
 
 def _call_notifier(args: list[str], stdin_data: str | None = None) -> None:
-    """Invoke scripts/notify.mjs via Node.js, logging the result."""
+    """Invoke bin/notify.mjs via Node.js, logging the result."""
     node = _node_bin()
     if not node:
         log.warning("notify: node binary not found — skipping email")
@@ -383,7 +383,7 @@ def run_daemon(
         if stats.get("error_type") == "token":
             _notify_token_error(
                 f"Token refresh failed on poll cycle {cycle}. "
-                "Run `python auth_pkce.py` to re-authenticate.",
+                "Run `python bin/auth_pkce.py` to re-authenticate.",
                 cycle,
             )
         else:

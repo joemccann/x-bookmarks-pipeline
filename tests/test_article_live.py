@@ -34,7 +34,7 @@ def main():
     with httpx.Client(timeout=30.0) as client:
         resp = client.get(url, headers=headers, params=params)
         if resp.status_code == 401:
-            print(f"401 Unauthorized — token may be expired. Run: python auth_pkce.py")
+            print(f"401 Unauthorized — token may be expired. Run: python bin/auth_pkce.py")
             return
         resp.raise_for_status()
 

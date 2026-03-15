@@ -49,7 +49,7 @@ cp .env.example .env
 | `X_CLIENT_ID` | Required for token refresh |
 | `X_CLIENT_SECRET` | Required for token refresh |
 
-Generate tokens with: `python auth_pkce.py`
+Generate tokens with: `python bin/auth_pkce.py`
 
 **For email notifications (daemon mode):**
 
@@ -68,15 +68,15 @@ Generate tokens with: `python auth_pkce.py`
 **Fetch and process live bookmarks (parallel, with caching):**
 
 ```bash
-python3 main.py --fetch
-python3 main.py --fetch --max-results 25
-python3 main.py --fetch --x-username YourHandle
+python3 bin/main.py --fetch
+python3 bin/main.py --fetch --max-results 25
+python3 bin/main.py --fetch --x-username YourHandle
 ```
 
 **From inline text:**
 
 ```bash
-python3 main.py \
+python3 bin/main.py \
   --text "BTC breakout above \$42k, RSI oversold on 4h. Target \$45k, SL \$40k" \
   --author "CryptoTrader99" \
   --date "2026-03-01"
@@ -85,7 +85,7 @@ python3 main.py \
 **With a chart image URL:**
 
 ```bash
-python3 main.py \
+python3 bin/main.py \
   --text "Long ETH here" \
   --chart-url "https://pbs.twimg.com/media/example.jpg" \
   --author "DeFiWhale" \
@@ -95,7 +95,7 @@ python3 main.py \
 **From a JSON bookmark file:**
 
 ```bash
-python3 main.py --file bookmark.json
+python3 bin/main.py --file bookmark.json
 ```
 
 ### CLI Options
@@ -123,7 +123,7 @@ python3 main.py --file bookmark.json
 
 ## Daemon Mode
 
-A launchd daemon (`service.py`) polls X every 15 minutes for new bookmarks and runs them through the full pipeline. Already-processed bookmarks are skipped via the SQLite cache.
+A launchd daemon (`bin/service.py`) polls X every 15 minutes for new bookmarks and runs them through the full pipeline. Already-processed bookmarks are skipped via the SQLite cache.
 
 ```bash
 # Install and start (runs at login, auto-restarts on crash)
@@ -138,19 +138,19 @@ A launchd daemon (`service.py`) polls X every 15 minutes for new bookmarks and r
 ./service_ctl.sh uninstall   # Unload + remove plist
 
 # Run inline without launchd (useful for testing)
-python3 main.py --daemon
-python3 main.py --daemon --interval 60
+python3 bin/main.py --daemon
+python3 bin/main.py --daemon --interval 60
 ```
 
 Logs go to `~/.local/log/x-bookmarks-pipeline.log`. The poll interval is 900 seconds (15 min) and is configurable via the `POLL_INTERVAL` env var.
 
 ### Email Notifications
 
-The daemon sends email alerts automatically via `scripts/notify.mjs` (Node.js / nodemailer):
+The daemon sends email alerts automatically via `bin/notify.mjs` (Node.js / nodemailer):
 
 | Trigger | Subject | Content |
 |---|---|---|
-| X OAuth token expired/invalid | `⚠️ X Bookmarks Pipeline: Token Refresh Failed` | Error details + instructions to run `python auth_pkce.py` |
+| X OAuth token expired/invalid | `⚠️ X Bookmarks Pipeline: Token Refresh Failed` | Error details + instructions to run `python bin/auth_pkce.py` |
 | New bookmarks processed | `📌 X Bookmarks: N processed (M finance) — Cycle K` | One card per bookmark: author, category, plan title, VALID/INVALID badge, text excerpt |
 
 Token error alerts are sent **once per failure run** — the alert suppresses itself until the token is fixed and a successful fetch occurs, so you won't be flooded every 15 minutes. Bookmark digests are sent once per cycle whenever `new > 0`.
@@ -236,9 +236,9 @@ The pipeline caches results in `cache/bookmarks.db` so bookmarks are never re-pr
 **Management:**
 
 ```bash
-python3 main.py --cache-stats    # Show counts
-python3 main.py --clear-cache    # Delete all cached results
-python3 main.py --no-cache       # Disable cache for this run
+python3 bin/main.py --cache-stats    # Show counts
+python3 bin/main.py --clear-cache    # Delete all cached results
+python3 bin/main.py --no-cache       # Disable cache for this run
 ```
 
 ## Parallel Processing
@@ -251,20 +251,20 @@ Finance bookmarks are also indexed into a SQLite signals database (`cache/signal
 
 ```bash
 # Index all output/finance/ files into signals.db
-python3 trading_main.py index
+python3 bin/trading_main.py index
 
 # Fetch market data (VIX, VVIX, MOVE, SPY, PSP) from yfinance
-python3 trading_main.py fetch
+python3 bin/trading_main.py fetch
 
 # Run all indicators + strategies (index → fetch → compute → emit signals)
-python3 trading_main.py run
+python3 bin/trading_main.py run
 
 # List indexed pipeline signals
-python3 trading_main.py list --type strategy
-python3 trading_main.py list --subcategory volatility
+python3 bin/trading_main.py list --type strategy
+python3 bin/trading_main.py list --subcategory volatility
 
 # Show emitted indicator/strategy signals
-python3 trading_main.py signals --name vix_vvix_mean_reversion
+python3 bin/trading_main.py signals --name vix_vvix_mean_reversion
 ```
 
 **Real-time sync:** The daemon's `on_meta_saved` hook calls `indexer.upsert_one()` immediately after each `.meta.json` is written — `signals.db` stays in sync without polling or a file watcher.
@@ -334,13 +334,12 @@ src/                                # Pipeline source
 ├── config.py                       # Centralized configuration defaults
 └── pipeline.py                     # Multi-LLM orchestrator (on_meta_saved hook)
 trading/                            # Trading engine (see above)
-trading_main.py                     # Trading engine CLI
-main.py                             # Pipeline CLI entrypoint
-service.py                          # launchd polling daemon (email notifications on errors + new bookmarks)
+bin/trading_main.py                 # Trading engine CLI
+bin/main.py                        # Pipeline CLI entrypoint
+bin/service.py                      # launchd polling daemon (email notifications on errors + new bookmarks)
 service_ctl.sh                      # Daemon management (install/start/stop/logs)
-auth_pkce.py                        # OAuth 2.0 PKCE token helper
-scripts/
-└── notify.mjs                      # Email notifier (nodemailer) — called by service.py via subprocess
+bin/auth_pkce.py                    # OAuth 2.0 PKCE token helper
+bin/notify.mjs                      # Email notifier (nodemailer) — called by bin/service.py via subprocess
 package.json                        # Node.js deps (nodemailer)
 tests/                              # 151 pipeline unit tests
 ```

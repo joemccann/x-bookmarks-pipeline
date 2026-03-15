@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/joemccann/dev/apps/util/x-bookmarks-pipeline/service.py</string>
+        <string>/Users/joemccann/dev/apps/util/x-bookmarks-pipeline/bin/service.py</string>
     </array>
 
     <key>WorkingDirectory</key>

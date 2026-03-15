@@ -1,4 +1,4 @@
-"""Tests for main.py CLI."""
+"""Tests for bin/main.py CLI."""
 from __future__ import annotations
 
 import json
@@ -25,7 +25,7 @@ class TestFetchModeErrorHandling:
                     "src.fetchers.x_bookmark_fetcher.XBookmarkFetcher.fetch",
                     side_effect=FetchError("X API returned status 401: Unauthorized"),
                 ):
-                    from main import main
+                    from bin.main import main
                     result = main()
                     assert result == 1
 
@@ -38,7 +38,7 @@ class TestCacheCommands:
                     "total": 0, "classified": 0, "planned": 0, "scripted": 0, "valid": 0, "completed": 0,
                 }):
                     with patch("src.cache.bookmark_cache.BookmarkCache.close"):
-                        from main import main
+                        from bin.main import main
                         result = main()
                         assert result == 0
 
@@ -47,32 +47,32 @@ class TestCacheCommands:
             with patch("src.cache.bookmark_cache.BookmarkCache.__init__", return_value=None):
                 with patch("src.cache.bookmark_cache.BookmarkCache.clear", return_value=5):
                     with patch("src.cache.bookmark_cache.BookmarkCache.close"):
-                        from main import main
+                        from bin.main import main
                         result = main()
                         assert result == 0
 
 
 class TestMakeTweetId:
     def test_deterministic(self):
-        from main import _make_tweet_id
+        from bin.main import _make_tweet_id
         id1 = _make_tweet_id("BTC long $42k", "trader")
         id2 = _make_tweet_id("BTC long $42k", "trader")
         assert id1 == id2
 
     def test_different_text_different_id(self):
-        from main import _make_tweet_id
+        from bin.main import _make_tweet_id
         id1 = _make_tweet_id("BTC long", "trader")
         id2 = _make_tweet_id("ETH short", "trader")
         assert id1 != id2
 
     def test_different_author_different_id(self):
-        from main import _make_tweet_id
+        from bin.main import _make_tweet_id
         id1 = _make_tweet_id("BTC long", "alice")
         id2 = _make_tweet_id("BTC long", "bob")
         assert id1 != id2
 
     def test_returns_16_char_hex(self):
-        from main import _make_tweet_id
+        from bin.main import _make_tweet_id
         tid = _make_tweet_id("test", "author")
         assert len(tid) == 16
         assert all(c in "0123456789abcdef" for c in tid)
@@ -103,12 +103,12 @@ class TestTextMode:
             "--author", "techuser", "--date", "2026-03-01",
             "--no-save", "--output-dir", str(tmp_path / "out"),
         ]):
-            with patch("main.MultiLLMPipeline") as mock_pipeline_cls:
+            with patch("bin.main.MultiLLMPipeline") as mock_pipeline_cls:
                 mock_pipeline = MagicMock()
                 mock_pipeline.run.return_value = mock_result
                 mock_pipeline_cls.return_value = mock_pipeline
 
-                from main import main
+                from bin.main import main
                 result = main()
 
         assert result == 0
@@ -141,12 +141,12 @@ class TestTextMode:
             "main.py", "--text", "BTC long $42k",
             "--no-save", "--output-dir", str(tmp_path / "out"),
         ]):
-            with patch("main.MultiLLMPipeline") as mock_pipeline_cls:
+            with patch("bin.main.MultiLLMPipeline") as mock_pipeline_cls:
                 mock_pipeline = MagicMock()
                 mock_pipeline.run.return_value = mock_result
                 mock_pipeline_cls.return_value = mock_pipeline
 
-                from main import main
+                from bin.main import main
                 result = main()
 
         assert result == 0
@@ -184,12 +184,12 @@ class TestFileMode:
             "main.py", "--file", str(bookmark_file),
             "--no-save", "--output-dir", str(tmp_path / "out"),
         ]):
-            with patch("main.MultiLLMPipeline") as mock_pipeline_cls:
+            with patch("bin.main.MultiLLMPipeline") as mock_pipeline_cls:
                 mock_pipeline = MagicMock()
                 mock_pipeline.run.return_value = mock_result
                 mock_pipeline_cls.return_value = mock_pipeline
 
-                from main import main
+                from bin.main import main
                 result = main()
 
         assert result == 0
@@ -213,7 +213,7 @@ class TestDateFiltering:
         ]
 
     def test_end_date_filters_after(self):
-        from main import _filter_bookmarks_by_date
+        from bin.main import _filter_bookmarks_by_date
         bms = self._make_bookmarks()
         filtered = _filter_bookmarks_by_date(bms, end_date="2026-03-15")
         dates = [b.date for b in filtered]
@@ -223,7 +223,7 @@ class TestDateFiltering:
         assert "2026-04-01" not in dates
 
     def test_start_date_filters_before(self):
-        from main import _filter_bookmarks_by_date
+        from bin.main import _filter_bookmarks_by_date
         bms = self._make_bookmarks()
         filtered = _filter_bookmarks_by_date(bms, start_date="2026-03-01")
         dates = [b.date for b in filtered]
@@ -233,27 +233,27 @@ class TestDateFiltering:
         assert "2026-04-01" in dates
 
     def test_date_range(self):
-        from main import _filter_bookmarks_by_date
+        from bin.main import _filter_bookmarks_by_date
         bms = self._make_bookmarks()
         filtered = _filter_bookmarks_by_date(bms, start_date="2026-03-01", end_date="2026-03-15")
         dates = [b.date for b in filtered]
         assert dates == ["2026-03-01", "2026-03-15"]
 
     def test_no_dates_returns_all(self):
-        from main import _filter_bookmarks_by_date
+        from bin.main import _filter_bookmarks_by_date
         bms = self._make_bookmarks()
         filtered = _filter_bookmarks_by_date(bms)
         assert len(filtered) == 5
 
     def test_bookmarks_without_date_excluded_when_filtering(self):
-        from main import _filter_bookmarks_by_date
+        from bin.main import _filter_bookmarks_by_date
         bms = self._make_bookmarks()
         filtered = _filter_bookmarks_by_date(bms, start_date="2026-03-01")
         # Bookmark with empty date should be excluded when date filter is active
         assert all(b.date != "" for b in filtered)
 
     def test_bookmarks_without_date_included_when_no_filter(self):
-        from main import _filter_bookmarks_by_date
+        from bin.main import _filter_bookmarks_by_date
         bms = self._make_bookmarks()
         filtered = _filter_bookmarks_by_date(bms)
         assert any(b.date == "" for b in filtered)
@@ -263,7 +263,7 @@ class TestPrintResult:
     """Test _print_result rendering paths don't crash."""
 
     def test_cached_result_with_category(self):
-        from main import _print_result
+        from bin.main import _print_result
         from src.pipeline import PipelineResult
         from src.classifiers.finance_classifier import ClassificationResult
 
@@ -281,7 +281,7 @@ class TestPrintResult:
         _print_result(result)
 
     def test_non_finance_result_renders_category(self):
-        from main import _print_result
+        from bin.main import _print_result
         from src.pipeline import PipelineResult
         from src.classifiers.finance_classifier import ClassificationResult
 
@@ -300,14 +300,14 @@ class TestPrintResult:
         _print_result(result)
 
     def test_error_result_renders(self):
-        from main import _print_result
+        from bin.main import _print_result
         from src.pipeline import PipelineResult
 
         result = PipelineResult(tweet_id="pr3", error="Something broke")
         _print_result(result)
 
     def test_meta_path_rendered(self):
-        from main import _print_result
+        from bin.main import _print_result
         from src.pipeline import PipelineResult
 
         result = PipelineResult(
@@ -318,7 +318,7 @@ class TestPrintResult:
         _print_result(result)
 
     def test_cached_without_classification(self):
-        from main import _print_result
+        from bin.main import _print_result
         from src.pipeline import PipelineResult
 
         result = PipelineResult(tweet_id="pr5", cached=True)

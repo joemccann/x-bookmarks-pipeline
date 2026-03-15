@@ -3,8 +3,8 @@
  * X Bookmarks Pipeline — Email Notifier
  *
  * Usage:
- *   node scripts/notify.mjs --mode error --message "..." --cycle 123
- *   echo '{"bookmarks":[...],"cycle":123}' | node scripts/notify.mjs --mode bookmarks
+ *   node bin/notify.mjs --mode error --message "..." --cycle 123
+ *   echo '{"bookmarks":[...],"cycle":123}' | node bin/notify.mjs --mode bookmarks
  *
  * Required env vars (shared with transparent-classroom-image-downloader):
  *   SMTP_HOST   SMTP_PORT   SMTP_USER   SMTP_PASS
@@ -93,7 +93,7 @@ function buildErrorHtml({ message, cycle, timestamp }) {
         <div style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#92400e;font-weight:700;margin-bottom:8px;">Action Required</div>
         <p style="margin:0;color:#0f172a;line-height:1.6;">
           The X OAuth refresh token has expired or been revoked. Run
-          <code style="background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:13px;font-family:ui-monospace,monospace;">python auth_pkce.py</code>
+          <code style="background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:13px;font-family:ui-monospace,monospace;">python bin/auth_pkce.py</code>
           in the project directory to re-authenticate and update <code style="background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:13px;font-family:ui-monospace,monospace;">.env</code>.
         </p>
       </div>
@@ -121,7 +121,7 @@ async function sendErrorEmail({ message, cycle }) {
       "",
       `Error: ${message}`,
       "",
-      "Action required: run `python auth_pkce.py` to re-authenticate.",
+      "Action required: run `python bin/auth_pkce.py` to re-authenticate.",
       "",
       `Poll cycle:  ${cycle ?? "(unknown)"}`,
       `Occurred at: ${timestamp}`,
@@ -235,8 +235,8 @@ async function main() {
   if (!mode) {
     console.error(
       "Usage:\n" +
-        "  node scripts/notify.mjs --mode error --message TEXT --cycle N\n" +
-        "  echo JSON | node scripts/notify.mjs --mode bookmarks"
+        "  node bin/notify.mjs --mode error --message TEXT --cycle N\n" +
+        "  echo JSON | node bin/notify.mjs --mode bookmarks"
     );
     process.exitCode = 1;
     return;
