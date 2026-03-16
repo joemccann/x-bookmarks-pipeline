@@ -959,9 +959,10 @@ async fn build_fetcher(
                                 )
                             })?,
                             true,
-                        );
+                        )
+                    } else {
+                        return Err(err);
                     }
-                    return Err(err);
                 }
                 Err(err) => return Err(err),
             };
@@ -1214,6 +1215,8 @@ async fn main() -> Result<()> {
     }
 
     ensure_cli_authentication(&args, &shared_http, &mut refresh_config).await?;
+    // Reload refresh config after auth gate — OAuth flow may have persisted new tokens
+    refresh_config = load_refresh_config();
 
     if args.cache_stats {
         if let Some(cache) = &cache {
