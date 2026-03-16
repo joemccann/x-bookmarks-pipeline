@@ -1437,7 +1437,7 @@ async fn main() -> Result<()> {
                     let failed = results.iter().filter(|result| !result.error.is_empty()).count();
                     if total > 0 {
                         let _ = notifier
-                            .send_cycle_summary(total, completed, cached, failed)
+                            .send_cycle_summary(total, completed, cached, failed, &results)
                             .await;
                     }
                 }

@@ -544,10 +544,10 @@ impl Pipeline {
                         self.log(
                             &bookmark.id,
                             "finalize",
-                            "sending notification for saved meta path",
+                            "sending notification for processed bookmark",
                         );
-                        if let Err(err) = notifier.send_meta_saved(meta_path).await {
-                            eprintln!("meta notification failed for {meta_path}: {err}");
+                        if let Err(err) = notifier.send_bookmark_processed(&result).await {
+                            eprintln!("bookmark notification failed for {}: {err}", bookmark.id);
                         }
                     }
                 } else {
