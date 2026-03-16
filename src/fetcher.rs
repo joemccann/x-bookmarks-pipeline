@@ -82,7 +82,12 @@ impl XBookmarkFetcher {
         if let Some(token) = page_token {
             request = request.query(&[("pagination_token", token)]);
         }
-        request = request.query(&[("max_results", self.page_limit.to_string())]);
+        request = request
+            .query(&[("max_results", self.page_limit.to_string())])
+            .query(&[("tweet.fields", "created_at,author_id,attachments")])
+            .query(&[("expansions", "author_id,attachments.media_keys")])
+            .query(&[("user.fields", "username,name")])
+            .query(&[("media.fields", "url,type")]);
 
         let response = request.send().await.map_err(|err| PipelineError::Http {
             operation: "x_fetch".to_string(),
@@ -131,6 +136,7 @@ pub(crate) fn parse_bookmarks_response(payload: &str) -> PipelineResult<XBookmar
         .and_then(Value::as_array)
         .map_or(&[][..], |items| items);
     let mut media_index = HashMap::new();
+    let mut user_index: HashMap<String, (String, String)> = HashMap::new(); // id -> (username, name)
 
     if let Some(includes) = root.get("includes").and_then(Value::as_object) {
         if let Some(media) = includes.get("media").and_then(Value::as_array) {
@@ -139,6 +145,15 @@ pub(crate) fn parse_bookmarks_response(payload: &str) -> PipelineResult<XBookmar
                     if let Some(url) = entry.get("url").and_then(Value::as_str) {
                         media_index.insert(id.to_string(), url.to_string());
                     }
+                }
+            }
+        }
+        if let Some(users) = includes.get("users").and_then(Value::as_array) {
+            for user in users {
+                if let Some(id) = user.get("id").and_then(Value::as_str) {
+                    let username = user.get("username").and_then(Value::as_str).unwrap_or("").to_string();
+                    let name = user.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                    user_index.insert(id.to_string(), (username, name));
                 }
             }
         }
@@ -153,15 +168,21 @@ pub(crate) fn parse_bookmarks_response(payload: &str) -> PipelineResult<XBookmar
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let author = entry
+        let author_id = entry
             .get("author_id")
             .and_then(Value::as_str)
-            .unwrap_or("x_user")
-            .to_string();
+            .unwrap_or("");
+        let author = if let Some((username, _name)) = user_index.get(author_id) {
+            if username.is_empty() { author_id.to_string() } else { username.clone() }
+        } else if author_id.is_empty() {
+            "unknown".to_string()
+        } else {
+            author_id.to_string()
+        };
         let date = entry
             .get("created_at")
             .and_then(Value::as_str)
-            .unwrap_or("undated")
+            .unwrap_or("")
             .to_string();
 
         let mut image_urls = Vec::new();
@@ -180,7 +201,7 @@ pub(crate) fn parse_bookmarks_response(payload: &str) -> PipelineResult<XBookmar
         let tweet_url = if id.is_empty() {
             String::from("https://x.com/i/web")
         } else {
-            format!("https://x.com/i/web/status/{id}")
+            format!("https://x.com/{author}/status/{id}")
         };
 
         bookmarks.push(Bookmark {
@@ -261,9 +282,15 @@ mod tests {
     fn parse_bookmarks_response_handles_pagination() {
         let payload = r#"{
             "data": [
-                {"id": "1", "text": "BTC uptrend", "author_id": "alpha", "created_at": "2026-03-14"},
-                {"id": "2", "text": "ETH range", "author_id": "beta", "created_at": "2026-03-14"}
+                {"id": "1", "text": "BTC uptrend", "author_id": "111", "created_at": "2026-03-14T10:00:00.000Z"},
+                {"id": "2", "text": "ETH range", "author_id": "222", "created_at": "2026-03-15T12:30:00.000Z"}
             ],
+            "includes": {
+                "users": [
+                    {"id": "111", "username": "alice", "name": "Alice A"},
+                    {"id": "222", "username": "bob", "name": "Bob B"}
+                ]
+            },
             "meta": {"next_token":"abc"}
         }"#;
 
@@ -271,6 +298,24 @@ mod tests {
         assert_eq!(page.bookmarks.len(), 2);
         assert_eq!(page.next_page_token, Some("abc".to_string()));
         assert_eq!(page.bookmarks[0].id, "1");
+        assert_eq!(page.bookmarks[0].author, "alice");
+        assert_eq!(page.bookmarks[0].date, "2026-03-14T10:00:00.000Z");
+        assert_eq!(page.bookmarks[0].tweet_url, "https://x.com/alice/status/1");
+        assert_eq!(page.bookmarks[1].author, "bob");
+        assert_eq!(page.bookmarks[1].date, "2026-03-15T12:30:00.000Z");
+    }
+
+    #[test]
+    fn parse_bookmarks_response_falls_back_without_includes() {
+        let payload = r#"{
+            "data": [
+                {"id": "1", "text": "no includes", "author_id": "999"}
+            ]
+        }"#;
+
+        let page = parse_bookmarks_response(payload).unwrap();
+        assert_eq!(page.bookmarks[0].author, "999");
+        assert_eq!(page.bookmarks[0].date, "");
     }
 
     #[test]
