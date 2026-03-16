@@ -1,3 +1,4 @@
+use crate::cost::{CostTracker, UsageInfo};
 use crate::error::PipelineError;
 use crate::parser;
 use crate::models::{
@@ -16,6 +17,8 @@ pub type LlmFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, PipelineError>
 
 pub trait LLMProvider: Send + Sync {
     fn name(&self) -> &'static str;
+
+    fn set_cost_tracker(&mut self, _tracker: CostTracker) {}
 
     fn classify<'a>(
         &'a self,
@@ -52,6 +55,7 @@ pub struct BaseLLMProvider {
     timeout_ms: u64,
     client: Client,
     flavor: ApiFlavor,
+    cost_tracker: Option<CostTracker>,
 }
 
 impl BaseLLMProvider {
@@ -73,7 +77,13 @@ impl BaseLLMProvider {
             timeout_ms: 120_000,
             client,
             flavor,
+            cost_tracker: None,
         }
+    }
+
+    pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
+        self.cost_tracker = Some(tracker);
+        self
     }
 
     fn endpoint_url(&self) -> String {
@@ -146,29 +156,41 @@ impl BaseLLMProvider {
         }
     }
 
-    fn extract_text_from_response(&self, body: &str) -> Result<String, PipelineError> {
+    fn extract_text_from_response(&self, body: &str) -> Result<(String, UsageInfo), PipelineError> {
         match self.flavor {
             ApiFlavor::OpenAiCompatible => {
                 let envelope: OpenAIChatResponse = serde_json::from_str(body)?;
                 let mut out = String::new();
-                for choice in envelope.choices {
-                    if let Some(content) = choice.message.content {
-                        out.push_str(&content);
+                for choice in &envelope.choices {
+                    if let Some(content) = &choice.message.content {
+                        out.push_str(content);
                     }
                 }
-                Ok(strip_markdown_fence(&out).to_string())
+                let usage = UsageInfo {
+                    provider: self.name.to_string(),
+                    model: self.model.clone(),
+                    input_tokens: envelope.usage.as_ref().and_then(|u| u.prompt_tokens).unwrap_or(0),
+                    output_tokens: envelope.usage.as_ref().and_then(|u| u.completion_tokens).unwrap_or(0),
+                };
+                Ok((strip_markdown_fence(&out).to_string(), usage))
             }
             ApiFlavor::Anthropic => {
                 let envelope: AnthropicChatResponse = serde_json::from_str(body)?;
                 let mut out = String::new();
-                for block in envelope.content {
+                for block in &envelope.content {
                     if block.block_type == "text" {
-                        if let Some(text) = block.text {
-                            out.push_str(&text);
+                        if let Some(text) = &block.text {
+                            out.push_str(text);
                         }
                     }
                 }
-                Ok(strip_markdown_fence(&out).to_string())
+                let usage = UsageInfo {
+                    provider: self.name.to_string(),
+                    model: self.model.clone(),
+                    input_tokens: envelope.usage.as_ref().and_then(|u| u.input_tokens).unwrap_or(0),
+                    output_tokens: envelope.usage.as_ref().and_then(|u| u.output_tokens).unwrap_or(0),
+                };
+                Ok((strip_markdown_fence(&out).to_string(), usage))
             }
         }
     }
@@ -179,6 +201,7 @@ impl BaseLLMProvider {
         user_prompt: &str,
         with_json_object: bool,
         image_urls: Option<&[String]>,
+        stage: &str,
     ) -> Result<String, PipelineError> {
         let payload = self.build_payload(system_prompt, user_prompt, with_json_object, image_urls);
         let request = match self.flavor {
@@ -216,13 +239,23 @@ impl BaseLLMProvider {
             });
         }
 
-        self.extract_text_from_response(&body)
+        let (text, usage) = self.extract_text_from_response(&body)?;
+
+        if let Some(tracker) = &self.cost_tracker {
+            tracker.record_active(stage, &usage);
+        }
+
+        Ok(text)
     }
 }
 
 impl LLMProvider for BaseLLMProvider {
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn set_cost_tracker(&mut self, tracker: CostTracker) {
+        self.cost_tracker = Some(tracker);
     }
 
     fn classify<'a>(
@@ -243,7 +276,7 @@ impl LLMProvider for BaseLLMProvider {
 
         Box::pin(async move {
             let text = self
-                .request_text(system_prompt, &body, true, None)
+                .request_text(system_prompt, &body, true, None, "classify")
                 .await
                 .map_err(PipelineError::from)?;
             let mut result = parse_with_fallback::<ClassificationResult>(
@@ -281,7 +314,7 @@ impl LLMProvider for BaseLLMProvider {
 
         Box::pin(async move {
             let raw_json = self
-                .request_text(system_prompt, &body, true, Some(&image_urls))
+                .request_text(system_prompt, &body, true, Some(&image_urls), "vision")
                 .await
                 .map_err(PipelineError::from)?;
             Ok(parse_image_output(&raw_json))
@@ -296,7 +329,7 @@ impl LLMProvider for BaseLLMProvider {
         let body = serde_json::to_string(&input.plan).unwrap_or_else(|_| "{}".to_string());
         Box::pin(async move {
             let text = self
-                .request_text(system_prompt, &body, false, None)
+                .request_text(system_prompt, &body, false, None, "generate")
                 .await
                 .map_err(PipelineError::from)?;
             Ok(parse_generated_code(&text).unwrap_or_else(|| CodeGenOutput {
@@ -309,7 +342,7 @@ impl LLMProvider for BaseLLMProvider {
 
     fn complete_json<'a>(&'a self, system_prompt: &'a str, user_prompt: &'a str) -> LlmFuture<'a, String> {
         Box::pin(async move {
-            self.request_text(system_prompt, user_prompt, true, None)
+            self.request_text(system_prompt, user_prompt, true, None, "plan")
                 .await
                 .map_err(PipelineError::from)
         })
@@ -407,6 +440,10 @@ macro_rules! delegate_provider {
                 self.inner.name()
             }
 
+            fn set_cost_tracker(&mut self, tracker: CostTracker) {
+                self.inner.set_cost_tracker(tracker);
+            }
+
             fn classify<'a>(
                 &'a self,
                 input: ClassificationInput,
@@ -458,8 +495,16 @@ struct OpenAIChoice {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct OpenAIUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct OpenAIChatResponse {
     choices: Vec<OpenAIChoice>,
+    usage: Option<OpenAIUsage>,
 }
 
 #[cfg(test)]
@@ -633,8 +678,15 @@ struct AnthropicBlock {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct AnthropicUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct AnthropicChatResponse {
     content: Vec<AnthropicBlock>,
+    usage: Option<AnthropicUsage>,
 }
 
 fn parse_generated_code(text: &str) -> Option<CodeGenOutput> {

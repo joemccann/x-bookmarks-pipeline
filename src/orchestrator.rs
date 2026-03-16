@@ -1,6 +1,7 @@
 use crate::cache::BookmarkCache;
 use crate::classifier::FinanceClassifier;
 use crate::config::AppConfig;
+use crate::cost::CostTracker;
 use crate::error::{PipelineError, PipelineResult};
 use crate::generator::PineScriptGenerator;
 use crate::llm::LLMProvider;
@@ -34,6 +35,7 @@ pub struct Pipeline {
     max_parallel_workers: usize,
     verbose: bool,
     on_meta_saved: Option<OnMetaSaved>,
+    cost_tracker: Option<CostTracker>,
 }
 
 impl Pipeline {
@@ -60,7 +62,13 @@ impl Pipeline {
             max_parallel_workers: config.max_workers.max(1),
             verbose: false,
             on_meta_saved: None,
+            cost_tracker: None,
         }
+    }
+
+    pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
+        self.cost_tracker = Some(tracker);
+        self
     }
 
     pub fn with_cache(mut self, enabled: bool) -> Self {
@@ -124,6 +132,10 @@ impl Pipeline {
     pub async fn run(&self, mut bookmark: Bookmark, save: bool) -> PipelineRunResult {
         let mut result = PipelineRunResult::new(&bookmark.id);
         self.log(&bookmark.id, "run", "starting pipeline");
+
+        if let Some(tracker) = &self.cost_tracker {
+            tracker.set_active_bookmark(&bookmark.id);
+        }
 
         if self.cache_enabled {
             self.log(&bookmark.id, "cache", "cache enabled, checking completed state");
@@ -566,6 +578,15 @@ impl Pipeline {
         let out_dir = self.output_directory(classification);
         fs::create_dir_all(&out_dir).await?;
 
+        let cost_json = self.cost_tracker.as_ref().map(|t| {
+            let entries: Vec<_> = t.entries().into_iter().filter(|e| e.bookmark_id == bookmark.id).collect();
+            let total: f64 = entries.iter().map(|e| e.cost_usd).sum();
+            serde_json::json!({
+                "total_cost_usd": format!("{:.6}", total),
+                "calls": entries,
+            })
+        });
+
         let meta = serde_json::json!({
             "tweet_id": bookmark.id,
             "tweet_url": bookmark.tweet_url,
@@ -588,6 +609,7 @@ impl Pipeline {
             "pattern": plan.and_then(|p| p.pattern.clone()),
             "key_levels": plan.map(|p| p.key_levels.clone()),
             "rationale": plan.map(|p| p.rationale.clone()),
+            "cost": cost_json,
         });
 
         let path = self.meta_path_for_bookmark(bookmark, classification);
@@ -629,6 +651,15 @@ impl Pipeline {
         let mut meta_path = pine_path.clone();
         meta_path.set_extension("meta.json");
 
+        let cost_json = self.cost_tracker.as_ref().map(|t| {
+            let entries: Vec<_> = t.entries().into_iter().filter(|e| e.bookmark_id == bookmark.id).collect();
+            let total: f64 = entries.iter().map(|e| e.cost_usd).sum();
+            serde_json::json!({
+                "total_cost_usd": format!("{:.6}", total),
+                "calls": entries,
+            })
+        });
+
         let meta = serde_json::json!({
             "tweet_id": bookmark.id,
             "tweet_url": bookmark.tweet_url,
@@ -648,6 +679,7 @@ impl Pipeline {
             "validation_passed": validation.valid,
             "validation_errors": validation.errors,
             "validation_warnings": validation.warnings,
+            "cost": cost_json,
         });
 
         if fs::write(

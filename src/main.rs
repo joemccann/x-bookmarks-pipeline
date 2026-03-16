@@ -22,6 +22,8 @@ use x_bookmarks_pipeline_rust::{
     notify::{EmailConfig, SmtpNotifier},
     orchestrator::{OnMetaSaved, Pipeline},
 };
+use x_bookmarks_pipeline_rust::browser::{AutoConsentConfig, AutoConsentOutcome};
+use x_bookmarks_pipeline_rust::cost::{CostTracker, RunCostSummary, generate_cost_report};
 use x_bookmarks_pipeline_rust::error::PipelineError;
 
 #[derive(Clone, Debug)]
@@ -210,7 +212,47 @@ fn build_oauth_authorization_url(
     )
 }
 
+fn chrome_user_data_dir() -> Option<std::path::PathBuf> {
+    env_any(&["XPB_CHROME_USER_DATA_DIR", "CHROME_USER_DATA_DIR"])
+        .map(std::path::PathBuf::from)
+}
+
+fn chrome_binary() -> String {
+    env_any(&["XPB_CHROME_BINARY", "CHROME_BINARY"])
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string()
+            } else if cfg!(target_os = "windows") {
+                "chrome.exe".to_string()
+            } else {
+                "google-chrome".to_string()
+            }
+        })
+}
+
+/// Open URL in Chrome with remote debugging enabled if a dedicated
+/// user-data-dir is configured. Falls back to default browser otherwise.
 fn open_in_browser(url: &str) -> bool {
+    if let Some(data_dir) = chrome_user_data_dir() {
+        let status = Command::new(chrome_binary())
+            .arg(format!("--user-data-dir={}", data_dir.display()))
+            .arg("--remote-debugging-port=0")
+            .arg(url)
+            .spawn();
+        match status {
+            Ok(_) => {
+                eprintln!(
+                    "[cdp] launched Chrome with remote debugging (user-data-dir={})",
+                    data_dir.display()
+                );
+                return true;
+            }
+            Err(e) => {
+                eprintln!("[cdp] Chrome launch failed: {e}; falling back to default browser");
+            }
+        }
+    }
+
     let status = if cfg!(target_os = "macos") {
         Command::new("open").arg(url).status()
     } else if cfg!(target_os = "windows") {
@@ -375,7 +417,40 @@ async fn start_interactive_reauth_flow(
     write_oauth_state(&state)?;
     emit_auth_flow_instructions(&client_id, &redirect_uri, &scope, &state.code_verifier, &url);
 
+    // Spawn CDP auto-consent task concurrently with the callback listener.
+    // If a chrome_user_data_dir is configured, the CDP task will connect to
+    // Chrome's DevTools WebSocket and click "Authorize app" automatically.
+    let auto_consent_handle = if let Some(data_dir) = chrome_user_data_dir() {
+        let auth_url = url.clone();
+        Some(tokio::spawn(async move {
+            let cfg = AutoConsentConfig {
+                expected_auth_url: auth_url,
+                chrome_user_data_dir: data_dir,
+                overall_timeout: Duration::from_secs(110),
+                poll_interval: Duration::from_millis(500),
+            };
+            match x_bookmarks_pipeline_rust::browser::auto_click_oauth_consent(cfg).await {
+                Ok(AutoConsentOutcome::Clicked { strategy }) =>
+                    eprintln!("[cdp] auto-consent succeeded via {strategy}"),
+                Ok(AutoConsentOutcome::ManualFallback(reason)) =>
+                    eprintln!("[cdp] auto-consent unavailable: {reason}"),
+                Ok(AutoConsentOutcome::TimedOut) =>
+                    eprintln!("[cdp] auto-consent timed out; waiting for manual click"),
+                Err(e) =>
+                    eprintln!("[cdp] auto-consent error: {e}"),
+            }
+        }))
+    } else {
+        None
+    };
+
     let code = wait_for_oauth_code(&redirect_uri, &state.state).await?;
+
+    // Abort the CDP task once the callback arrives (or times out)
+    if let Some(handle) = auto_consent_handle {
+        handle.abort();
+    }
+
     let Some(code) = code else {
         return Ok(false);
     };
@@ -959,9 +1034,10 @@ async fn build_fetcher(
                                 )
                             })?,
                             true,
-                        );
+                        )
+                    } else {
+                        return Err(err);
                     }
-                    return Err(err);
                 }
                 Err(err) => return Err(err),
             };
@@ -1078,31 +1154,103 @@ async fn run_cycle(
     Ok(results)
 }
 
+fn write_cost_report(
+    tracker: &CostTracker,
+    results: &[PipelineResultModel],
+    output_dir: &str,
+) -> anyhow::Result<()> {
+    let entries = tracker.entries();
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    // Build per-bookmark summaries
+    let mut bookmark_entries: std::collections::HashMap<String, Vec<x_bookmarks_pipeline_rust::cost::CostEntry>> =
+        std::collections::HashMap::new();
+    for entry in &entries {
+        bookmark_entries
+            .entry(entry.bookmark_id.clone())
+            .or_default()
+            .push(entry.clone());
+    }
+
+    let summaries: Vec<RunCostSummary> = results
+        .iter()
+        .filter_map(|r| {
+            let bm_entries = bookmark_entries.remove(&r.tweet_id)?;
+            let total_cost: f64 = bm_entries.iter().map(|e| e.cost_usd).sum();
+            let (category, is_finance) = match &r.classification {
+                Some(c) => (c.category.clone(), c.is_finance),
+                None => ("unknown".to_string(), false),
+            };
+            Some(RunCostSummary {
+                bookmark_id: r.tweet_id.clone(),
+                category,
+                is_finance,
+                total_cost_usd: total_cost,
+                entries: bm_entries,
+            })
+        })
+        .collect();
+
+    if summaries.is_empty() {
+        return Ok(());
+    }
+
+    let report = generate_cost_report(&summaries);
+    let report_path = std::path::Path::new(output_dir).join("cost_report.md");
+    std::fs::create_dir_all(output_dir)?;
+    std::fs::write(&report_path, &report)?;
+
+    let total_cost: f64 = summaries.iter().map(|s| s.total_cost_usd).sum();
+    eprintln!(
+        "[cost] report written to {} (total: ${:.4}, {} bookmarks with LLM calls)",
+        report_path.display(),
+        total_cost,
+        summaries.len(),
+    );
+
+    Ok(())
+}
+
 fn pipeline_providers(
     shared_http: Client,
+    cost_tracker: Option<&x_bookmarks_pipeline_rust::cost::CostTracker>,
 ) -> anyhow::Result<(
     Arc<dyn LLMProvider>,
     Arc<dyn LLMProvider>,
     Arc<dyn LLMProvider>,
     Arc<dyn LLMProvider>,
 )> {
+    let mut cerebras = CerebrasProvider::new(
+        require_env("CEREBRAS_API_KEY", &[])?,
+        shared_http.clone(),
+    );
+    let mut xai = XaiProvider::new(
+        require_env("XAI_API_KEY", &[])?,
+        shared_http.clone(),
+    );
+    let mut claude = ClaudeProvider::new(
+        require_env("ANTHROPIC_API_KEY", &[])?,
+        shared_http.clone(),
+    );
+    let mut openai = OpenAIProvider::new(
+        require_env("OPENAI_API_KEY", &[])?,
+        shared_http,
+    );
+
+    if let Some(tracker) = cost_tracker {
+        cerebras.set_cost_tracker(tracker.clone());
+        xai.set_cost_tracker(tracker.clone());
+        claude.set_cost_tracker(tracker.clone());
+        openai.set_cost_tracker(tracker.clone());
+    }
+
     Ok((
-        Arc::new(CerebrasProvider::new(
-            require_env("CEREBRAS_API_KEY", &[])?,
-            shared_http.clone(),
-        )),
-        Arc::new(XaiProvider::new(
-            require_env("XAI_API_KEY", &[])?,
-            shared_http.clone(),
-        )),
-        Arc::new(ClaudeProvider::new(
-            require_env("ANTHROPIC_API_KEY", &[])?,
-            shared_http.clone(),
-        )),
-        Arc::new(OpenAIProvider::new(
-            require_env("OPENAI_API_KEY", &[])?,
-            shared_http,
-        )),
+        Arc::new(cerebras),
+        Arc::new(xai),
+        Arc::new(claude),
+        Arc::new(openai),
     ))
 }
 
@@ -1214,6 +1362,8 @@ async fn main() -> Result<()> {
     }
 
     ensure_cli_authentication(&args, &shared_http, &mut refresh_config).await?;
+    // Reload refresh config after auth gate — OAuth flow may have persisted new tokens
+    refresh_config = load_refresh_config();
 
     if args.cache_stats {
         if let Some(cache) = &cache {
@@ -1225,7 +1375,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let providers = pipeline_providers(shared_http.clone())?;
+    let cost_tracker = CostTracker::new();
+    let providers = pipeline_providers(shared_http.clone(), Some(&cost_tracker))?;
     let mut fetcher = build_fetcher(&args, &cfg, &mut refresh_config).await?;
     let notifier = build_notifier();
     if notifier.is_some() {
@@ -1252,7 +1403,8 @@ async fn main() -> Result<()> {
         .with_cache(!args.no_cache)
         .with_vision(!args.no_vision)
         .with_verbose(args.verbose)
-        .with_on_meta_saved(hook),
+        .with_on_meta_saved(hook)
+        .with_cost_tracker(cost_tracker.clone()),
     );
 
     let daemon_mode = args.daemon || env_flag(&["XPB_DAEMON", "DAEMON_MODE"]);
@@ -1276,7 +1428,8 @@ async fn main() -> Result<()> {
     };
 
     if !daemon_mode {
-        let _ = run_cycle(&pipeline, &mut fetcher, &shared_http, &mut refresh_config, &args).await?;
+        let results = run_cycle(&pipeline, &mut fetcher, &shared_http, &mut refresh_config, &args).await?;
+        write_cost_report(&cost_tracker, &results, &cfg.output_dir)?;
         return Ok(());
     }
 
