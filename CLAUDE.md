@@ -7,9 +7,9 @@ This repository is a Rust implementation of the X bookmark pipeline with shared 
 - `llm.rs` exposes the shared `LLMProvider` trait (`classify`, `analyze_image`, `generate_code`) and provider wrappers.
 - `cache.rs` owns SQLite persistence with shared mutable access using `Arc<Mutex<Connection>>`.
 - `orchestrator.rs` coordinates bounded worker parallelism and `on_meta_saved` side effects.
-- `notify.rs` implements `SmtpNotifier` via `lettre`.
+- `notify.rs` implements `SmtpNotifier` via `lettre` with rich HTML email templates.
 - `error.rs` centralizes `PipelineError` and conversion of external failures.
-- `browser.rs` implements CDP (Chrome DevTools Protocol) auto-consent for OAuth reauth.
+- `browser.rs` implements CDP auto-consent (connects to existing Chrome via HTTP discovery on port 9222), tab close after OAuth callback.
 - `cost.rs` tracks per-bookmark LLM token usage and USD costs with per-provider pricing.
 - `main.rs` handles startup, env loading, provider bootstrap, and CLI dispatch.
 
@@ -52,8 +52,18 @@ Optional runtime tuning:
 - `XPB_DAEMON` / `DAEMON_MODE`
 - `DAEMON_INTERVAL_SECONDS` / `XPB_DAEMON_INTERVAL_SECONDS`
 - `DAEMON_MAX_CYCLES` / `XPB_DAEMON_MAX_CYCLES`
-- `XPB_CHROME_USER_DATA_DIR` — dedicated Chrome profile for CDP auto-consent
-- `XPB_CHROME_BINARY` — Chrome binary path override
+- `XPB_CHROME_USER_DATA_DIR` — Chrome profile for CDP discovery (defaults to platform default)
+- `XPB_CHROME_APP` — macOS app name for `open -a` (e.g. `Chrome Debug`)
+
+## CDP auto-consent
+
+The pipeline connects to Chrome's existing DevTools Protocol endpoint to auto-click "Authorize app" during OAuth reauth. Discovery order:
+1. `DevToolsActivePort` in `XPB_CHROME_USER_DATA_DIR` (or default Chrome profile)
+2. HTTP discovery at `http://127.0.0.1:9222/json/version`
+
+After successful OAuth, the localhost callback tab is closed via `/json/close`.
+
+Notifications are only sent for **new** (non-cached) bookmarks — cached reruns are silent.
 
 ## Notes
 

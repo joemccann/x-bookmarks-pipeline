@@ -20,7 +20,9 @@ thanks to persistent caching.
 -   Persistent SQLite caching (idempotent reruns)
 -   Daemon mode for continuous bookmark ingestion
 -   Automatic OAuth reauth with CDP auto-consent (zero manual intervention)
--   Email notifications for completed runs
+-   Per-bookmark LLM cost tracking (USD) with `output/cost_report.md`
+-   Rich HTML email notifications (per-bookmark + cycle summaries)
+-   Notifications only for new bookmarks (cached reruns are silent)
 -   Structured error handling and retry-safe execution
 
 ------------------------------------------------------------------------
@@ -100,29 +102,38 @@ interactive OAuth 2.0 PKCE flow and listens for the callback on
 localhost. By default the user must click **Authorize app** in the
 browser manually.
 
-## Automatic consent via CDP (optional)
+## Automatic consent via CDP
 
-Set `XPB_CHROME_USER_DATA_DIR` to a dedicated Chrome profile directory.
-When configured, the pipeline will:
+The pipeline connects to your **existing Chrome** via the Chrome
+DevTools Protocol to auto-click "Authorize app". No separate browser
+instance is launched.
 
-1.  Launch Chrome with `--remote-debugging-port=0` using that profile
-2.  Connect to Chrome DevTools Protocol via WebSocket
-3.  Locate the OAuth consent page and click **Authorize app** automatically
-4.  Fall back gracefully to manual mode if CDP is unavailable
+**How it works:**
 
-### One-time setup
+1.  The OAuth URL opens in Chrome (or a configured Chrome app like `Chrome Debug`)
+2.  CDP discovers Chrome via `http://127.0.0.1:9222/json/version` or `DevToolsActivePort`
+3.  Finds the OAuth consent tab and clicks **Authorize app** via `data-testid`
+4.  After the callback is received, the localhost tab is closed automatically
+
+### Setup
+
+Chrome must have remote debugging enabled on port 9222. The recommended
+approach is a dedicated Chrome Debug app (an Automator wrapper that
+launches Chrome with `--remote-debugging-port=9222`).
 
 ``` bash
-# Create a dedicated Chrome profile for OAuth
-mkdir -p ~/.chrome-oauth-profile
-
 # Add to .env
-echo 'XPB_CHROME_USER_DATA_DIR=/path/to/.chrome-oauth-profile' >> .env
+XPB_CHROME_APP=Chrome Debug    # macOS: open -a "Chrome Debug" for OAuth URLs
 ```
 
-The first time the reauth flow runs, Chrome will open with a fresh
-profile. Log into X once in that browser window. After that, all future
-OAuth reauths are fully automatic.
+Optionally point to a specific Chrome profile for `DevToolsActivePort` discovery:
+
+``` bash
+XPB_CHROME_USER_DATA_DIR=/path/to/ChromeDebugProfile
+```
+
+If neither is set, the pipeline falls back to the default Chrome profile
+directory and the default browser.
 
 ### Failure modes
 
@@ -130,12 +141,38 @@ All failures degrade cleanly to the existing manual flow:
 
 | Scenario | Behavior |
 |---|---|
-| `XPB_CHROME_USER_DATA_DIR` not set | Manual flow only (no regression) |
-| Chrome not launched with remote debugging | Log + manual fallback |
-| `DevToolsActivePort` missing or unreadable | Log + manual fallback |
+| Chrome not running with remote debugging | Log + manual fallback |
+| No `DevToolsActivePort` and port 9222 unreachable | Log + manual fallback |
 | User not logged into X | Log "login required", keep polling |
 | Consent button selector drift | Return manual fallback with diagnostics |
 | Callback arrives before CDP finishes | CDP task aborted cleanly |
+
+------------------------------------------------------------------------
+
+# LLM Cost Tracking
+
+Every LLM API call captures `prompt_tokens` and `completion_tokens`
+from the provider response and computes a USD cost using per-model
+pricing tables. Costs are:
+
+-   Attached to each bookmark's `.meta.json` under a `"cost"` key
+-   Aggregated into `output/cost_report.md` after each pipeline run
+
+The cost report includes breakdowns by provider, pipeline stage, and
+per-bookmark.
+
+------------------------------------------------------------------------
+
+# Email Notifications
+
+When SMTP is configured, the pipeline sends rich HTML emails:
+
+-   **Per-bookmark** (new bookmarks only): category badge, topic,
+    confidence, ticker/direction/timeframe, rationale, tweet preview
+-   **Cycle summary** (daemon mode): stat cards for total/new/cached/failed,
+    table of new bookmarks, error list
+
+Cached bookmarks do **not** trigger notifications on subsequent runs.
 
 ------------------------------------------------------------------------
 
@@ -162,8 +199,8 @@ All failures degrade cleanly to the existing manual flow:
 
 ## CDP Auto-Consent (optional)
 
-    XPB_CHROME_USER_DATA_DIR   # dedicated Chrome profile for reauth
-    XPB_CHROME_BINARY          # Chrome binary path override
+    XPB_CHROME_USER_DATA_DIR   # Chrome profile dir for DevToolsActivePort discovery
+    XPB_CHROME_APP             # macOS app name (e.g. "Chrome Debug")
 
 ## Email Notifications (optional)
 
@@ -227,8 +264,9 @@ See `Cargo.toml` for the full dependency list with versions.
     │   ├── orchestrator.rs   # Pipeline workflow
     │   ├── llm.rs            # LLM provider abstraction
     │   ├── cache.rs          # SQLite caching
-    │   ├── browser.rs        # CDP auto-consent client
-    │   ├── notify.rs         # SMTP notifications
+    │   ├── browser.rs        # CDP auto-consent + tab management
+    │   ├── cost.rs           # LLM token usage and USD cost tracking
+    │   ├── notify.rs         # Rich HTML email notifications
     │   ├── error.rs          # Structured pipeline errors
     │   ├── classifier.rs     # Text/vision classification
     │   ├── fetcher.rs        # X API bookmark fetcher
@@ -269,10 +307,11 @@ Core modules:
 | Module | Purpose |
 |---|---|
 | `orchestrator.rs` | Pipeline workflow and concurrency |
-| `llm.rs` | LLM provider abstraction |
+| `llm.rs` | LLM provider abstraction with token usage capture |
 | `cache.rs` | SQLite caching and migrations |
-| `browser.rs` | CDP WebSocket client for OAuth auto-consent |
-| `notify.rs` | SMTP notifications |
+| `browser.rs` | CDP auto-consent, HTTP discovery, tab management |
+| `cost.rs` | Per-provider pricing, cost tracking, report generation |
+| `notify.rs` | Rich HTML email notifications (per-bookmark + cycle) |
 | `error.rs` | Structured pipeline errors |
 
 The pipeline runs asynchronously with bounded worker concurrency.
