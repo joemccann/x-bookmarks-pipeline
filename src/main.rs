@@ -212,49 +212,31 @@ fn build_oauth_authorization_url(
     )
 }
 
+/// Resolve the Chrome user-data-dir for CDP auto-consent.
+/// Prefers the explicit env var, falls back to the default Chrome profile.
 fn chrome_user_data_dir() -> Option<std::path::PathBuf> {
-    env_any(&["XPB_CHROME_USER_DATA_DIR", "CHROME_USER_DATA_DIR"])
-        .map(std::path::PathBuf::from)
-}
-
-fn chrome_binary() -> String {
-    env_any(&["XPB_CHROME_BINARY", "CHROME_BINARY"])
-        .unwrap_or_else(|| {
-            if cfg!(target_os = "macos") {
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string()
-            } else if cfg!(target_os = "windows") {
-                "chrome.exe".to_string()
-            } else {
-                "google-chrome".to_string()
-            }
-        })
-}
-
-/// Open URL in Chrome with remote debugging enabled if a dedicated
-/// user-data-dir is configured. Falls back to default browser otherwise.
-fn open_in_browser(url: &str) -> bool {
-    if let Some(data_dir) = chrome_user_data_dir() {
-        let status = Command::new(chrome_binary())
-            .arg(format!("--user-data-dir={}", data_dir.display()))
-            .arg("--remote-debugging-port=0")
-            .arg(url)
-            .spawn();
-        match status {
-            Ok(_) => {
-                eprintln!(
-                    "[cdp] launched Chrome with remote debugging (user-data-dir={})",
-                    data_dir.display()
-                );
-                return true;
-            }
-            Err(e) => {
-                eprintln!("[cdp] Chrome launch failed: {e}; falling back to default browser");
-            }
-        }
+    if let Some(explicit) = env_any(&["XPB_CHROME_USER_DATA_DIR", "CHROME_USER_DATA_DIR"]) {
+        return Some(std::path::PathBuf::from(explicit));
     }
+    x_bookmarks_pipeline_rust::browser::default_chrome_user_data_dir()
+}
+
+/// Open URL in the browser. On macOS, uses Chrome Debug app if configured
+/// (via XPB_CHROME_APP env var), otherwise opens in the default browser.
+fn open_in_browser(url: &str) -> bool {
+    let chrome_app = env_any(&["XPB_CHROME_APP"]);
 
     let status = if cfg!(target_os = "macos") {
-        Command::new("open").arg(url).status()
+        if let Some(app) = &chrome_app {
+            // Open URL specifically in the named Chrome app (e.g. "Chrome Debug")
+            Command::new("open")
+                .arg("-a")
+                .arg(app)
+                .arg(url)
+                .status()
+        } else {
+            Command::new("open").arg(url).status()
+        }
     } else if cfg!(target_os = "windows") {
         Command::new("cmd")
             .arg("/C")

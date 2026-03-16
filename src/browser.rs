@@ -18,11 +18,29 @@ pub struct AutoConsentConfig {
     /// Used to match the correct tab (by URL prefix or `state` parameter).
     pub expected_auth_url: String,
     /// Path to the Chrome user-data-dir whose `DevToolsActivePort` we read.
+    /// If not set, defaults to the standard macOS/Linux/Windows Chrome profile.
     pub chrome_user_data_dir: PathBuf,
     /// Maximum time to keep trying before giving up.
     pub overall_timeout: Duration,
     /// Delay between target-discovery polls.
     pub poll_interval: Duration,
+}
+
+/// Returns the default Chrome user-data-dir for the current platform.
+pub fn default_chrome_user_data_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        dirs_home().map(|h| h.join("Library/Application Support/Google/Chrome"))
+    } else if cfg!(target_os = "windows") {
+        std::env::var("LOCALAPPDATA")
+            .ok()
+            .map(|d| PathBuf::from(d).join("Google/Chrome/User Data"))
+    } else {
+        dirs_home().map(|h| h.join(".config/google-chrome"))
+    }
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 /// Structured outcome — better than a bool for logs and tests.
@@ -189,10 +207,6 @@ pub fn build_click_js() -> &'static str {
         btn = buttons.find(function(b) { return /^allow$/i.test(b.textContent.trim()); });
         if (btn) { btn.click(); return {clicked:true, strategy:"text-allow", label:btn.textContent.trim().substring(0,80)}; }
 
-        // Strategy 4: sole submit button
-        var submits = Array.from(document.querySelectorAll('button[type="submit"]'));
-        if (submits.length === 1) { submits[0].click(); return {clicked:true, strategy:"sole-submit", label:submits[0].textContent.trim().substring(0,80)}; }
-
         return {clicked:false, strategy:"none", label:""};
     }
 
@@ -332,7 +346,27 @@ impl CdpClient {
 }
 
 // ---------------------------------------------------------------------------
-// Public entry point
+// HTTP-based Chrome discovery (fallback when DevToolsActivePort is missing)
+// ---------------------------------------------------------------------------
+
+/// Query Chrome's HTTP discovery endpoint to get the browser WebSocket URL.
+/// Chrome with `--remote-debugging-port=PORT` exposes `/json/version` which
+/// returns `{ "webSocketDebuggerUrl": "ws://..." }`.
+async fn discover_ws_url_via_http(port: u16) -> Option<String> {
+    let url = format!("http://127.0.0.1:{port}/json/version");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let resp = client.get(&url).send().await.ok()?;
+    let body: Value = resp.json().await.ok()?;
+    body.get("webSocketDebuggerUrl")
+        .and_then(Value::as_str)
+        .map(String::from)
+}
+
+// ---------------------------------------------------------------------------
+// CDP auto-consent — connects to the user's existing Chrome
 // ---------------------------------------------------------------------------
 
 /// Attempt to auto-click the OAuth consent button in Chrome via CDP.
@@ -345,28 +379,33 @@ pub async fn auto_click_oauth_consent(cfg: AutoConsentConfig) -> Result<AutoCons
     let port_path = devtools_active_port_path(&cfg.chrome_user_data_dir);
     let deadline = Instant::now() + cfg.overall_timeout;
 
-    // Phase 1: Wait for DevToolsActivePort to appear
-    let (port, ws_path) = loop {
+    // Phase 1: Discover the Chrome DevTools WebSocket URL.
+    // Try two methods:
+    //   A) Read DevToolsActivePort file from the configured user-data-dir
+    //   B) Query the HTTP discovery endpoint at well-known port (9222)
+    let ws_url = loop {
         if Instant::now() >= deadline {
             return Ok(AutoConsentOutcome::ManualFallback(
-                "DevToolsActivePort never appeared before deadline",
+                "Could not discover Chrome DevTools endpoint before deadline",
             ));
         }
-        match tokio::fs::read_to_string(&port_path).await {
-            Ok(contents) => match parse_devtools_active_port(&contents) {
-                Ok(parsed) => break parsed,
-                Err(e) => {
-                    eprintln!("[cdp] DevToolsActivePort parse error: {e}");
-                    sleep(cfg.poll_interval).await;
-                }
-            },
-            Err(_) => {
-                sleep(cfg.poll_interval).await;
+
+        // Method A: DevToolsActivePort file
+        if let Ok(contents) = tokio::fs::read_to_string(&port_path).await {
+            if let Ok((port, ws_path)) = parse_devtools_active_port(&contents) {
+                break build_ws_url(port, &ws_path);
             }
         }
+
+        // Method B: HTTP discovery at well-known port 9222
+        if let Some(url) = discover_ws_url_via_http(9222).await {
+            eprintln!("[cdp] discovered Chrome via HTTP endpoint on port 9222");
+            break url;
+        }
+
+        sleep(cfg.poll_interval).await;
     };
 
-    let ws_url = build_ws_url(port, &ws_path);
     let mut client = match CdpClient::connect(&ws_url).await {
         Ok(c) => c,
         Err(e) => {
