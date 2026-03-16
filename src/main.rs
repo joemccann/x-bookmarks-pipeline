@@ -457,6 +457,10 @@ async fn start_interactive_reauth_flow(
     }
     clear_oauth_state();
     println!("OAuth exchange succeeded and token updated.");
+
+    // Close the localhost callback tab in Chrome
+    x_bookmarks_pipeline_rust::browser::close_tabs_matching("localhost").await;
+
     Ok(true)
 }
 

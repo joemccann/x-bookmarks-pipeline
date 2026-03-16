@@ -365,6 +365,35 @@ async fn discover_ws_url_via_http(port: u16) -> Option<String> {
         .map(String::from)
 }
 
+/// Close Chrome tabs whose URL contains the given substring.
+/// Uses Chrome's `/json/close/{id}` HTTP endpoint — no WebSocket needed.
+pub async fn close_tabs_matching(url_substring: &str) {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let resp = match client.get("http://127.0.0.1:9222/json").send().await {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let tabs: Vec<Value> = resp.json().await.unwrap_or_default();
+
+    for tab in &tabs {
+        let tab_url = tab["url"].as_str().unwrap_or("");
+        if tab_url.contains(url_substring) {
+            if let Some(id) = tab["id"].as_str() {
+                let close_url = format!("http://127.0.0.1:9222/json/close/{id}");
+                let _ = client.get(&close_url).send().await;
+                eprintln!("[cdp] closed tab: {}", &tab_url[..tab_url.len().min(80)]);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CDP auto-consent — connects to the user's existing Chrome
 // ---------------------------------------------------------------------------
