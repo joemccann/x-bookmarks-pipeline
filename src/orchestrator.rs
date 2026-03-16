@@ -534,19 +534,24 @@ impl Pipeline {
         );
         if save && result.error.is_empty() {
             if let Some(meta_path) = result.meta_path.as_deref() {
-                if let Some(hook) = &self.on_meta_saved {
-                    self.log(&bookmark.id, "finalize", "invoking on_meta_saved hook");
-                    let _ = hook(meta_path);
-                }
-                if let Some(notifier) = &self.notifier {
-                    self.log(
-                        &bookmark.id,
-                        "finalize",
-                        "sending notification for saved meta path",
-                    );
-                    if let Err(err) = notifier.send_meta_saved(meta_path).await {
-                        eprintln!("meta notification failed for {meta_path}: {err}");
+                // Only fire hooks/notifications for NEW results, not cached reruns
+                if !result.cached {
+                    if let Some(hook) = &self.on_meta_saved {
+                        self.log(&bookmark.id, "finalize", "invoking on_meta_saved hook");
+                        let _ = hook(meta_path);
                     }
+                    if let Some(notifier) = &self.notifier {
+                        self.log(
+                            &bookmark.id,
+                            "finalize",
+                            "sending notification for saved meta path",
+                        );
+                        if let Err(err) = notifier.send_meta_saved(meta_path).await {
+                            eprintln!("meta notification failed for {meta_path}: {err}");
+                        }
+                    }
+                } else {
+                    self.log(&bookmark.id, "finalize", "skipping notification for cached result");
                 }
                 if let Some(cache) = &self.cache {
                     if self.cache_enabled {
