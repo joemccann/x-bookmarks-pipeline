@@ -1,127 +1,292 @@
 # X Bookmarks Pipeline
 
-The X Bookmarks Pipeline automates end-to-end processing of X (Twitter) bookmarks into trading artifacts. It:
+Convert **X (Twitter) bookmarks into trading strategies**.
 
-- Loads bookmarks from the X API or local input
-- Classifies whether a bookmark is finance-related
-- Optionally analyzes chart images (vision)
-- Generates a Pine Script v6 strategy/reasoning payload
-- Validates generated scripts and writes artifacts for review/deployment
-- Stores intermediate/final results in SQLite for idempotent reruns
-- Sends email notifications for completed metadata writes and daemon cycle summaries
+This pipeline ingests bookmarks, detects finance-related content,
+analyzes charts, and generates **validated Pine Script strategies**
+ready for review or deployment.
 
-## Features
+It is built in **Rust**, runs asynchronously, and is safe to rerun
+thanks to persistent caching.
 
-- Multi-provider LLM orchestration (`Cerebras`, `xAI`, `Claude`, `OpenAI`)
-- Async parallel execution with bounded worker concurrency
-- Optional vision fallback and cache reuse across stages
-- Persistent caching by bookmark id (`classification`, `plan`, `script`, validation, and completion state)
-- Daemon mode for periodic polling and incremental processing
-- Structured errors and robust retry-safe cache lock handling
+------------------------------------------------------------------------
 
-## Repository layout
+# Features
 
-```text
-.
-├── Cargo.toml             # Rust crate manifest
-├── Cargo.lock
-├── src/
-│   ├── llm.rs             # LLM provider abstraction + implementations
-│   ├── cache.rs           # SQLite cache and migration helpers
-│   ├── orchestrator.rs    # Pipeline orchestration + hooks
-│   ├── notify.rs          # Native SMTP notifications
-│   ├── error.rs           # PipelineError/structured failures
-│   └── ...
-├── tests/
-│   └── dotenv_bootstrap.rs # CLI integration sanity test
-├── .env.example
-└── CLAUDE.md
-```
+-   Multi-provider LLM orchestration (`Cerebras`, `xAI`, `Claude`,
+    `OpenAI`)
+-   Parallel processing with bounded worker concurrency
+-   Optional vision analysis for chart screenshots
+-   Persistent SQLite caching (idempotent reruns)
+-   Daemon mode for continuous bookmark ingestion
+-   Automatic OAuth reauth with CDP auto-consent (zero manual intervention)
+-   Email notifications for completed runs
+-   Structured error handling and retry-safe execution
 
-The runtime entrypoint is `src/main.rs` and execution is in this crate root.
+------------------------------------------------------------------------
 
-## Setup
+# Quickstart
 
-```bash
+Clone the repository and configure environment variables.
+
+``` bash
 cp .env.example .env
 cargo build
 ```
 
-Optional: run tests before first use.
+Run tests:
 
-```bash
+``` bash
 cargo test
 ```
 
-## Required and optional environment variables
+Run the pipeline:
 
-- Required for end-to-end execution: `CEREBRAS_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
-- Optional fetch auth configuration: `X_BEARER_TOKEN`, `X_ACCESS_TOKEN`, `X_USER_ACCESS_TOKEN`
-- Optional automatic refresh configuration: `X_CLIENT_ID` / `XPB_X_CLIENT_ID`, `X_CLIENT_SECRET` / `XPB_X_CLIENT_SECRET`, `X_REFRESH_TOKEN` / `XPB_X_REFRESH_TOKEN`
-- Optional notification configuration: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`
-- Optional model/runner configuration: `CEREBRAS_MODEL`, `XAI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `CACHE_PATH`, `MAX_WORKERS`, `API_TIMEOUT`, `VISION_TIMEOUT`, `FETCH_TIMEOUT`, `DEFAULT_TICKER`, `DEFAULT_TIMEFRAME`
-- Optional X fetch configuration: `X_FETCH_USER_ID`, `X_FETCH_USERNAME`, `XPB_X_FETCH_USER_ID`, `XPB_X_FETCH_USERNAME`
-- Optional daemon scheduling configuration: `XPB_DAEMON`, `XPB_DAEMON_INTERVAL_SECONDS`, `XPB_DAEMON_MAX_CYCLES`, `XPB_FETCH_LOOP`
-
-## Build, test, and run
-
-```bash
-cargo build
-cargo test
-# one-time execution from text input
+``` bash
 cargo run -- --text "BTC 4h bullish momentum and breakout"
+```
 
-# periodic mode (polling)
+------------------------------------------------------------------------
+
+# Usage
+
+## Process X bookmarks
+
+``` bash
+cargo run -- --fetch --fetch-user-id <x_user_id>
+```
+
+## Process a local file
+
+``` bash
+cargo run -- --file bookmarks.json
+```
+
+## Process a single text input
+
+``` bash
+cargo run -- --text "ETH breakout after key support hold"
+```
+
+## Run continuously (daemon mode)
+
+``` bash
 cargo run -- --daemon --daemon-interval 300
 ```
 
-`cargo run` executes the orchestrator workflow.
+When daemon mode is enabled the pipeline:
 
-When daemon mode is enabled, per-bookmark notifications are sent from the SMTP notifier (if configured), and a cycle summary is also sent for each non-empty batch.
+-   polls for new bookmarks
+-   processes them incrementally
+-   sends per-bookmark notifications
+-   sends a summary email per cycle
 
-## Authentication behavior
+------------------------------------------------------------------------
 
-The CLI validates authentication at startup for every command (except explicit OAuth helper commands `--auth-url` and `--auth-code`).
+# Dry run
 
-- If a usable token is present, the run continues.
-- If the token is missing/expired and refresh credentials are available (`X_REFRESH_TOKEN` + `X_CLIENT_ID`), it attempts automatic refresh.
-- If the token is missing/expired and refresh fails (or no refresh credentials are available), it launches the browser OAuth flow automatically and exits with instructions.
+Disable external side effects.
 
-To force a fresh token before a run and persist it to `.env`, use:
-
-```bash
-cargo run -- --fetch --fetch-username <username> --reauth
-```
-
-When a `.env` file is present, `--reauth` updates `X_BEARER_TOKEN` (or existing token keys) with the newly issued access token.
-
-## Common usage patterns
-
-```bash
-# fetch latest bookmarks and process them (user ID)
-cargo run -- --fetch --fetch-user-id <x_user_id>
-# fetch latest bookmarks and process them (username)
-cargo run -- --fetch --fetch-username joemccann
-# force token refresh before processing bookmarks
-cargo run -- --fetch --fetch-username joemccann --reauth
-
-# interactive browser reauth when the refresh token is invalid/expired
-# 1) Reauth flow will open your browser automatically
-cargo run -- --auth-url
-# 2) After authorization, exchange the code using the printed verifier
-cargo run -- --auth-code '<code>' --auth-code-verifier '<verifier>'
-
-If your app uses a different OAuth redirect URI:
-cargo run -- --auth-url --auth-redirect-uri 'http://localhost:8080/callback'
-
-# process bookmarks from JSON/text file
-cargo run -- --file path/to/bookmarks.json
-cargo run -- --text "ETH breakout after key support hold"
-
-# disable external side effects for dry-runs
+``` bash
 cargo run -- --no-save --no-cache --text "quick reasoning check"
 ```
 
-## Notes
+------------------------------------------------------------------------
 
-Python and Node runtime artifacts are intentionally out of the code path.
+# OAuth Reauth
+
+When the daemon's X API token expires, the pipeline starts an
+interactive OAuth 2.0 PKCE flow and listens for the callback on
+localhost. By default the user must click **Authorize app** in the
+browser manually.
+
+## Automatic consent via CDP (optional)
+
+Set `XPB_CHROME_USER_DATA_DIR` to a dedicated Chrome profile directory.
+When configured, the pipeline will:
+
+1.  Launch Chrome with `--remote-debugging-port=0` using that profile
+2.  Connect to Chrome DevTools Protocol via WebSocket
+3.  Locate the OAuth consent page and click **Authorize app** automatically
+4.  Fall back gracefully to manual mode if CDP is unavailable
+
+### One-time setup
+
+``` bash
+# Create a dedicated Chrome profile for OAuth
+mkdir -p ~/.chrome-oauth-profile
+
+# Add to .env
+echo 'XPB_CHROME_USER_DATA_DIR=/path/to/.chrome-oauth-profile' >> .env
+```
+
+The first time the reauth flow runs, Chrome will open with a fresh
+profile. Log into X once in that browser window. After that, all future
+OAuth reauths are fully automatic.
+
+### Failure modes
+
+All failures degrade cleanly to the existing manual flow:
+
+| Scenario | Behavior |
+|---|---|
+| `XPB_CHROME_USER_DATA_DIR` not set | Manual flow only (no regression) |
+| Chrome not launched with remote debugging | Log + manual fallback |
+| `DevToolsActivePort` missing or unreadable | Log + manual fallback |
+| User not logged into X | Log "login required", keep polling |
+| Consent button selector drift | Return manual fallback with diagnostics |
+| Callback arrives before CDP finishes | CDP task aborted cleanly |
+
+------------------------------------------------------------------------
+
+# Environment Variables
+
+## Required
+
+    CEREBRAS_API_KEY
+    XAI_API_KEY
+    ANTHROPIC_API_KEY
+    OPENAI_API_KEY
+
+## X API Authentication
+
+    X_BEARER_TOKEN          # or X_ACCESS_TOKEN
+    X_FETCH_USER_ID         # numeric user ID
+
+## OAuth Refresh (optional)
+
+    X_CLIENT_ID
+    X_CLIENT_SECRET
+    X_REFRESH_TOKEN
+    X_OAUTH_SCOPE
+
+## CDP Auto-Consent (optional)
+
+    XPB_CHROME_USER_DATA_DIR   # dedicated Chrome profile for reauth
+    XPB_CHROME_BINARY          # Chrome binary path override
+
+## Email Notifications (optional)
+
+    SMTP_HOST
+    SMTP_USER
+    SMTP_PASSWORD
+    SMTP_FROM
+    SMTP_TO
+
+## Runtime Configuration (optional)
+
+    CEREBRAS_MODEL
+    XAI_MODEL
+    ANTHROPIC_MODEL
+    OPENAI_MODEL
+
+    CACHE_PATH
+    MAX_WORKERS
+
+    API_TIMEOUT
+    VISION_TIMEOUT
+    FETCH_TIMEOUT
+
+    DEFAULT_TICKER
+    DEFAULT_TIMEFRAME
+
+## Daemon Configuration (optional)
+
+    XPB_DAEMON
+    XPB_DAEMON_INTERVAL_SECONDS
+    XPB_DAEMON_MAX_CYCLES
+    XPB_FETCH_LOOP
+
+------------------------------------------------------------------------
+
+# Dependencies
+
+Key Rust crates:
+
+| Crate | Purpose |
+|---|---|
+| `tokio` | Async runtime (multi-thread, networking, I/O) |
+| `reqwest` | HTTP client for LLM and X API calls |
+| `rusqlite` | SQLite caching (bundled) |
+| `serde` / `serde_json` | JSON serialization |
+| `clap` | CLI argument parsing |
+| `lettre` | SMTP email notifications |
+| `tokio-tungstenite` | WebSocket client for CDP auto-consent |
+| `futures-util` | Stream/sink combinators for WebSocket |
+| `anyhow` / `thiserror` | Error handling |
+
+See `Cargo.toml` for the full dependency list with versions.
+
+------------------------------------------------------------------------
+
+# Repository Structure
+
+    .
+    ├── src/
+    │   ├── main.rs           # Startup, CLI, OAuth flow
+    │   ├── orchestrator.rs   # Pipeline workflow
+    │   ├── llm.rs            # LLM provider abstraction
+    │   ├── cache.rs          # SQLite caching
+    │   ├── browser.rs        # CDP auto-consent client
+    │   ├── notify.rs         # SMTP notifications
+    │   ├── error.rs          # Structured pipeline errors
+    │   ├── classifier.rs     # Text/vision classification
+    │   ├── fetcher.rs        # X API bookmark fetcher
+    │   ├── generator.rs      # Pine Script generation
+    │   ├── planner.rs        # Strategy planning
+    │   ├── validator.rs      # Pine Script validation
+    │   ├── vision.rs         # Image analysis
+    │   └── ...
+    ├── Cargo.toml
+    ├── Cargo.lock
+    ├── .env.example
+    └── CLAUDE.md
+
+------------------------------------------------------------------------
+
+# Pipeline
+
+The pipeline executes the following stages:
+
+    Bookmarks
+      → Classification
+      → Vision Analysis
+      → Strategy Generation
+      → Script Validation
+      → Artifact Output
+
+Each stage is cached by bookmark id, allowing safe reruns without
+recomputation.
+
+------------------------------------------------------------------------
+
+# Architecture
+
+The system is implemented as a **single Rust crate**.
+
+Core modules:
+
+| Module | Purpose |
+|---|---|
+| `orchestrator.rs` | Pipeline workflow and concurrency |
+| `llm.rs` | LLM provider abstraction |
+| `cache.rs` | SQLite caching and migrations |
+| `browser.rs` | CDP WebSocket client for OAuth auto-consent |
+| `notify.rs` | SMTP notifications |
+| `error.rs` | Structured pipeline errors |
+
+The pipeline runs asynchronously with bounded worker concurrency.
+
+------------------------------------------------------------------------
+
+# Design Principles
+
+-   **Idempotent execution** --- safe to rerun any time
+-   **Deterministic artifacts** --- cached intermediate results
+-   **Parallel processing** --- high throughput
+-   **Provider abstraction** --- easy model switching
+-   **Graceful degradation** --- CDP auto-consent falls back to manual
+-   **Minimal runtime dependencies** --- Rust-only execution
+
+Python and Node runtimes are intentionally **not in the execution
+path**.

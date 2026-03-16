@@ -9,6 +9,8 @@ This repository is a Rust implementation of the X bookmark pipeline with shared 
 - `orchestrator.rs` coordinates bounded worker parallelism and `on_meta_saved` side effects.
 - `notify.rs` implements `SmtpNotifier` via `lettre`.
 - `error.rs` centralizes `PipelineError` and conversion of external failures.
+- `browser.rs` implements CDP (Chrome DevTools Protocol) auto-consent for OAuth reauth.
+- `cost.rs` tracks per-bookmark LLM token usage and USD costs with per-provider pricing.
 - `main.rs` handles startup, env loading, provider bootstrap, and CLI dispatch.
 
 ## Setup
@@ -50,6 +52,8 @@ Optional runtime tuning:
 - `XPB_DAEMON` / `DAEMON_MODE`
 - `DAEMON_INTERVAL_SECONDS` / `XPB_DAEMON_INTERVAL_SECONDS`
 - `DAEMON_MAX_CYCLES` / `XPB_DAEMON_MAX_CYCLES`
+- `XPB_CHROME_USER_DATA_DIR` — dedicated Chrome profile for CDP auto-consent
+- `XPB_CHROME_BINARY` — Chrome binary path override
 
 ## Notes
 
