@@ -1556,4 +1556,25 @@ mod tests {
         let value = env_any(&["XPB_ENV_TEST_ANY_FIRST", "XPB_ENV_TEST_ANY_SECOND"]).unwrap();
         assert_eq!(value, "winner");
     }
+
+    #[test]
+    fn load_refresh_config_requires_both_token_and_client_id() {
+        let _lock = lock_env();
+        // Neither set → None
+        let _rt = EnvVarGuard::set("X_REFRESH_TOKEN", None);
+        let _ci = EnvVarGuard::set("X_CLIENT_ID", None);
+        let _rt2 = EnvVarGuard::set("XPB_X_REFRESH_TOKEN", None);
+        let _ci2 = EnvVarGuard::set("XPB_X_CLIENT_ID", None);
+        assert!(load_refresh_config().is_none());
+
+        // Only refresh token → None
+        env::set_var("X_REFRESH_TOKEN", "rt-123");
+        assert!(load_refresh_config().is_none());
+
+        // Both set → Some
+        env::set_var("X_CLIENT_ID", "cid-456");
+        let cfg = load_refresh_config().unwrap();
+        assert_eq!(cfg.refresh_token, "rt-123");
+        assert_eq!(cfg.client_id, "cid-456");
+    }
 }
