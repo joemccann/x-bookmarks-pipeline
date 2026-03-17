@@ -1447,7 +1447,9 @@ async fn main() -> Result<()> {
                     let completed = results.iter().filter(|result| result.error.is_empty()).count();
                     let cached = results.iter().filter(|result| result.cached).count();
                     let failed = results.iter().filter(|result| !result.error.is_empty()).count();
-                    if total > 0 {
+                    let new_count = results.iter().filter(|r| !r.cached && r.error.is_empty()).count();
+                    // Only send cycle summary when there are new bookmarks or errors
+                    if new_count > 0 || failed > 0 {
                         let _ = notifier
                             .send_cycle_summary(total, completed, cached, failed, &results)
                             .await;
