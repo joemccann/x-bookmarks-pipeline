@@ -740,9 +740,10 @@ async fn fetch_bookmarks_with_refresh(
     match fetcher.fetch().await {
         Ok(bookmarks) => Ok(bookmarks),
         Err(PipelineError::TokenExpired { .. }) if refresh_config.is_some() => {
-            if let Some(cfg) = refresh_config {
+            if let Some(cfg) = refresh_config.as_mut() {
                 match refresh_x_access_token(fetch_client, cfg).await {
                     Ok(token) => {
+                        let _ = persist_refreshed_access_token(&token, Some(&cfg.refresh_token));
                         fetcher.set_access_token(token).await;
                         return fetcher.fetch().await.map_err(Into::into);
                     }
@@ -751,12 +752,11 @@ async fn fetch_bookmarks_with_refresh(
                             "token refresh failed while retrying expired token ({refresh_error}); launching browser login"
                         );
                         if start_interactive_reauth_flow(args, fetch_client).await? {
+                            *refresh_config = load_refresh_config();
                             if let Some(token) = env_any(&[
                                 "X_BEARER_TOKEN",
                                 "X_ACCESS_TOKEN",
                                 "X_USER_ACCESS_TOKEN",
-                                "XPB_X_BEARER_TOKEN",
-                                "XPB_X_USER_ACCESS_TOKEN",
                             ]) {
                                 fetcher.set_access_token(token).await;
                             }
@@ -769,12 +769,11 @@ async fn fetch_bookmarks_with_refresh(
                 }
             }
             if start_interactive_reauth_flow(args, fetch_client).await? {
+                *refresh_config = load_refresh_config();
                 if let Some(token) = env_any(&[
                     "X_BEARER_TOKEN",
                     "X_ACCESS_TOKEN",
                     "X_USER_ACCESS_TOKEN",
-                    "XPB_X_BEARER_TOKEN",
-                    "XPB_X_USER_ACCESS_TOKEN",
                 ]) {
                     fetcher.set_access_token(token).await;
                 }
@@ -828,15 +827,18 @@ async fn preflight_refresh_fetcher_token(
                 eprintln!(
                     "reauth required before processing, but refresh failed ({err}); launching browser login"
                 );
-                if start_interactive_reauth_flow(args, fetch_client).await? {
-                    return Ok(false);
-                }
-                return Err(anyhow::anyhow!(
-                    "reauth required before processing, but refresh failed ({err})"
-                ));
+            } else {
+                eprintln!("preflight token refresh failed ({err}); launching browser login");
             }
-            eprintln!("preflight token refresh failed ({err}); launching browser login");
             if start_interactive_reauth_flow(args, fetch_client).await? {
+                // Browser reauth succeeded — reload refresh config from env
+                *refresh_config = load_refresh_config();
+                // Update fetcher with the new access token
+                if let Some(new_access) = env_any(&[
+                    "X_BEARER_TOKEN", "X_ACCESS_TOKEN", "X_USER_ACCESS_TOKEN",
+                ]) {
+                    fetcher.set_access_token(new_access).await;
+                }
                 return Ok(false);
             }
             return Err(anyhow::anyhow!(
@@ -851,9 +853,8 @@ async fn preflight_refresh_fetcher_token(
         ));
     }
 
-    if require_fresh {
-        let _ = persist_refreshed_access_token(&new_token, None);
-    }
+    // Always persist both the access token and the rotated refresh token
+    let _ = persist_refreshed_access_token(&new_token, Some(&cfg.refresh_token));
 
     Ok(false)
 }
@@ -906,6 +907,8 @@ async fn ensure_cli_authentication(
 
     eprintln!("authentication required but token is missing/expired; launching browser reauth");
     if start_interactive_reauth_flow(args, http).await? {
+        // Reload refresh config from env after successful browser reauth
+        *refresh_config = load_refresh_config();
         return Ok(());
     }
     Err(anyhow::anyhow!(
@@ -1027,19 +1030,24 @@ async fn build_fetcher(
                 }
                 Err(err) => return Err(err),
             };
-        if args.reauth {
+        // Always persist rotated tokens so the daemon's next cycle can use them
+        if refreshed_from_reauth || args.reauth {
             match persist_refreshed_access_token(
                 &access_token,
                 refresh_config.as_ref().map(|cfg| cfg.refresh_token.as_str()),
             ) {
-                Ok(true) => println!("reauth completed and token persisted to .env"),
+                Ok(true) => {
+                    if args.reauth {
+                        println!("reauth completed and token persisted to .env");
+                    }
+                }
                 Ok(false) => {
-                    if refreshed_from_reauth {
+                    if args.reauth {
                         println!("reauth completed for this process (no .env file found to update)");
                     }
                 }
                 Err(err) => {
-                    eprintln!("reauth succeeded but .env write failed ({err})");
+                    eprintln!("token persist to .env failed ({err})");
                 }
             }
         }
