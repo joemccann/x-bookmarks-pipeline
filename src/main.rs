@@ -1104,6 +1104,7 @@ async fn run_cycle(
     fetch_client: &Client,
     refresh_config: &mut Option<XRefreshConfig>,
     args: &CliArgs,
+    cache: &Option<BookmarkCache>,
 ) -> Result<Vec<PipelineResultModel>, anyhow::Error> {
     let bookmarks = if let Some(fetcher) = fetcher {
         let suppress_retry = preflight_refresh_fetcher_token(
@@ -1123,25 +1124,34 @@ async fn run_cycle(
         cli::load_bookmarks(args)?
     };
 
-    println!("loaded {} bookmarks", bookmarks.len());
-    if bookmarks.is_empty() {
-        println!("no bookmarks to process");
-        return Ok(Vec::new());
-    }
+    // Filter to only new bookmarks (not already completed in cache)
+    let bookmarks = if let Some(cache) = cache {
+        let mut new_bookmarks = Vec::new();
+        for bm in bookmarks {
+            if cache.has_completed(&bm.id).await.unwrap_or(false) {
+                continue;
+            }
+            new_bookmarks.push(bm);
+        }
+        if new_bookmarks.is_empty() {
+            println!("no new bookmarks");
+            return Ok(Vec::new());
+        }
+        println!("fetched {} new bookmarks", new_bookmarks.len());
+        new_bookmarks
+    } else {
+        println!("loaded {} bookmarks", bookmarks.len());
+        bookmarks
+    };
 
     let results = pipeline.clone().run_batch(bookmarks, args.should_save()).await;
     println!("processed {} bookmarks", results.len());
     for result in &results {
         println!(
-            "{} => cached={}, has_script={}, error={}",
+            "{} => has_script={}, error={}",
             result.tweet_id,
-            result.cached,
             !result.pine_script.is_empty(),
-            if result.error.is_empty() {
-                "none"
-            } else {
-                &result.error
-            }
+            if result.error.is_empty() { "none" } else { &result.error }
         );
     }
 
@@ -1390,7 +1400,7 @@ async fn main() -> Result<()> {
             Arc::clone(&providers.1),
             Arc::clone(&providers.2),
             Arc::clone(&providers.3),
-            cache,
+            cache.clone(),
             notifier.clone(),
             &cfg,
         )
@@ -1422,7 +1432,7 @@ async fn main() -> Result<()> {
     };
 
     if !daemon_mode {
-        let results = run_cycle(&pipeline, &mut fetcher, &shared_http, &mut refresh_config, &args).await?;
+        let results = run_cycle(&pipeline, &mut fetcher, &shared_http, &mut refresh_config, &args, &cache).await?;
         write_cost_report(&cost_tracker, &results, &cfg.output_dir)?;
         return Ok(());
     }
@@ -1437,22 +1447,15 @@ async fn main() -> Result<()> {
             &shared_http,
             &mut refresh_config,
             &args,
+            &cache,
         )
         .await
         {
             Ok(results) => {
                 fail_streak = 0;
                 if let Some(notifier) = &notifier {
-                    let total = results.len();
-                    let completed = results.iter().filter(|result| result.error.is_empty()).count();
-                    let cached = results.iter().filter(|result| result.cached).count();
-                    let failed = results.iter().filter(|result| !result.error.is_empty()).count();
-                    let new_count = results.iter().filter(|r| !r.cached && r.error.is_empty()).count();
-                    // Only send cycle summary when there are new bookmarks or errors
-                    if new_count > 0 || failed > 0 {
-                        let _ = notifier
-                            .send_cycle_summary(total, completed, cached, failed, &results)
-                            .await;
+                    if !results.is_empty() {
+                        let _ = notifier.send_cycle_summary(&results).await;
                     }
                 }
             }

@@ -534,24 +534,11 @@ impl Pipeline {
         );
         if save && result.error.is_empty() {
             if let Some(meta_path) = result.meta_path.as_deref() {
-                // Only fire hooks/notifications for NEW results, not cached reruns
                 if !result.cached {
                     if let Some(hook) = &self.on_meta_saved {
                         self.log(&bookmark.id, "finalize", "invoking on_meta_saved hook");
                         let _ = hook(meta_path);
                     }
-                    if let Some(notifier) = &self.notifier {
-                        self.log(
-                            &bookmark.id,
-                            "finalize",
-                            "sending notification for processed bookmark",
-                        );
-                        if let Err(err) = notifier.send_bookmark_processed(&result).await {
-                            eprintln!("bookmark notification failed for {}: {err}", bookmark.id);
-                        }
-                    }
-                } else {
-                    self.log(&bookmark.id, "finalize", "skipping notification for cached result");
                 }
                 if let Some(cache) = &self.cache {
                     if self.cache_enabled {
