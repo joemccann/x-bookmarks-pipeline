@@ -7,7 +7,7 @@ This repository is a Rust implementation of the X bookmark pipeline with shared 
 - `llm.rs` exposes the shared `LLMProvider` trait (`classify`, `analyze_image`, `generate_code`) and provider wrappers.
 - `cache.rs` owns SQLite persistence with shared mutable access using `Arc<Mutex<Connection>>`.
 - `orchestrator.rs` coordinates bounded worker parallelism and `on_meta_saved` side effects.
-- `notify.rs` implements `SmtpNotifier` via `lettre` with rich HTML email templates.
+- `notify.rs` implements `SmtpNotifier` via `lettre`; one email per cycle listing new bookmarks only.
 - `error.rs` centralizes `PipelineError` and conversion of external failures.
 - `browser.rs` implements CDP auto-consent (connects to existing Chrome via HTTP discovery on port 9222), tab close after OAuth callback.
 - `cost.rs` tracks per-bookmark LLM token usage and USD costs with per-provider pricing.
@@ -63,7 +63,7 @@ The pipeline connects to Chrome's existing DevTools Protocol endpoint to auto-cl
 
 After successful OAuth, the localhost callback tab is closed via `/json/close`.
 
-Notifications are only sent for **new** (non-cached) bookmarks — cached reruns are silent.
+Daemon filters bookmarks against cache before processing — only new bookmarks enter the pipeline. One summary email per cycle lists new bookmarks (URL, category, summary). No email when nothing is new.
 
 ## Notes
 

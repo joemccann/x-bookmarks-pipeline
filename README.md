@@ -21,8 +21,7 @@ thanks to persistent caching.
 -   Daemon mode for continuous bookmark ingestion
 -   Automatic OAuth reauth with CDP auto-consent (zero manual intervention)
 -   Per-bookmark LLM cost tracking (USD) with `output/cost_report.md`
--   Rich HTML email notifications (per-bookmark + cycle summaries)
--   Notifications only for new bookmarks (cached reruns are silent)
+-   Email notifications for new bookmarks only (link, category, summary)
 -   Structured error handling and retry-safe execution
 
 ------------------------------------------------------------------------
@@ -78,10 +77,9 @@ cargo run -- --daemon --daemon-interval 300
 
 When daemon mode is enabled the pipeline:
 
--   polls for new bookmarks
--   processes them incrementally
--   sends per-bookmark notifications
--   sends a summary email per cycle
+-   polls for new bookmarks (skips already-processed ones)
+-   classifies, plans, and generates Pine Scripts for finance bookmarks
+-   sends one email per cycle listing the new bookmarks
 
 ------------------------------------------------------------------------
 
@@ -165,14 +163,15 @@ per-bookmark.
 
 # Email Notifications
 
-When SMTP is configured, the pipeline sends rich HTML emails:
+When SMTP is configured, the daemon sends one email per cycle listing
+only **new** bookmarks. Each row shows:
 
--   **Per-bookmark** (new bookmarks only): category badge, topic,
-    confidence, ticker/direction/timeframe, rationale, tweet preview
--   **Cycle summary** (daemon mode): stat cards for total/new/cached/failed,
-    table of new bookmarks, error list
+-   **Link** to the original tweet
+-   **Category** (e.g. finance/equities, technology/ai)
+-   **Summary** of the bookmark content
 
-Cached bookmarks do **not** trigger notifications on subsequent runs.
+Errors are listed per-bookmark if any pipeline stage failed. No email
+is sent when there are no new bookmarks.
 
 ------------------------------------------------------------------------
 
