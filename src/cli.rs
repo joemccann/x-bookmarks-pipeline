@@ -26,13 +26,24 @@ pub struct CliArgs {
     #[arg(long = "reauth", help = "Refresh the X access token before processing")]
     pub reauth: bool,
 
-    #[arg(long = "auth-url", help = "Print the X OAuth authorization URL for interactive token reauthentication and exit")]
+    #[arg(
+        long = "auth-url",
+        help = "Print the X OAuth authorization URL for interactive token reauthentication and exit"
+    )]
     pub auth_url: bool,
 
-    #[arg(long = "auth-code", value_name = "CODE", help = "Exchange an OAuth authorization code for new access/refresh tokens")]
+    #[arg(
+        long = "auth-code",
+        value_name = "CODE",
+        help = "Exchange an OAuth authorization code for new access/refresh tokens"
+    )]
     pub auth_code: Option<String>,
 
-    #[arg(long = "auth-code-verifier", value_name = "VERIFIER", help = "PKCE verifier used with --auth-code")]
+    #[arg(
+        long = "auth-code-verifier",
+        value_name = "VERIFIER",
+        help = "PKCE verifier used with --auth-code"
+    )]
     pub auth_code_verifier: Option<String>,
 
     #[arg(
@@ -41,31 +52,64 @@ pub struct CliArgs {
     )]
     pub auth_redirect_uri: Option<String>,
 
-    #[arg(long = "fetch-user-id", value_name = "USER_ID", help = "X user id for bookmark fetch endpoint")]
+    #[arg(
+        long = "fetch-user-id",
+        value_name = "USER_ID",
+        help = "X user id for bookmark fetch endpoint"
+    )]
     pub fetch_user_id: Option<String>,
 
-    #[arg(long = "fetch-username", value_name = "USERNAME", help = "X username for bookmark fetch endpoint (resolved to user id)")]
+    #[arg(
+        long = "fetch-username",
+        value_name = "USERNAME",
+        help = "X username for bookmark fetch endpoint (resolved to user id)"
+    )]
     pub fetch_username: Option<String>,
 
-    #[arg(long = "fetch-endpoint", value_name = "URL", help = "Override X bookmarks endpoint URL")]
+    #[arg(
+        long = "fetch-endpoint",
+        value_name = "URL",
+        help = "Override X bookmarks endpoint URL"
+    )]
     pub fetch_endpoint: Option<String>,
 
-    #[arg(long = "fetch-limit", default_value_t = 50, help = "Maximum bookmarks to fetch (reduced default to save API costs)")]
+    #[arg(
+        long = "fetch-limit",
+        default_value_t = 50,
+        help = "Maximum bookmarks to fetch (reduced default to save API costs)"
+    )]
     pub fetch_limit: usize,
 
-    #[arg(long = "fetch-pages", default_value_t = 2, help = "Maximum bookmark pages to request (reduced default to save API costs)")]
+    #[arg(
+        long = "fetch-pages",
+        default_value_t = 2,
+        help = "Maximum bookmark pages to request (reduced default to save API costs)"
+    )]
     pub fetch_pages: usize,
 
-    #[arg(long = "max-requests-per-cycle", help = "Maximum X API requests per daemon cycle (0 = unlimited)")]
+    #[arg(
+        long = "max-requests-per-cycle",
+        help = "Maximum X API requests per daemon cycle (0 = unlimited)"
+    )]
     pub max_requests_per_cycle: Option<u32>,
 
-    #[arg(long = "max-requests-per-day", help = "Maximum X API requests per day (0 = unlimited)")]
+    #[arg(
+        long = "max-requests-per-day",
+        help = "Maximum X API requests per day (0 = unlimited)"
+    )]
     pub max_requests_per_day: Option<u32>,
 
-    #[arg(long = "max-cost-per-day", help = "Maximum estimated X API cost per day in USD (0 = unlimited)")]
+    #[arg(
+        long = "max-cost-per-day",
+        help = "Maximum estimated X API cost per day in USD (0 = unlimited)"
+    )]
     pub max_cost_per_day: Option<f64>,
 
-    #[arg(long = "early-stop-threshold", default_value_t = 5, help = "Stop fetching after N consecutive cached bookmarks")]
+    #[arg(
+        long = "early-stop-threshold",
+        default_value_t = 5,
+        help = "Stop fetching after N consecutive cached bookmarks"
+    )]
     pub early_stop_threshold: usize,
 
     #[arg(long = "no-cache", help = "Disable cache reads/writes")]
@@ -74,10 +118,18 @@ pub struct CliArgs {
     #[arg(long = "no-vision", help = "Disable vision analysis stage")]
     pub no_vision: bool,
 
-    #[arg(short = 'w', long = "workers", help = "Override worker count from config")]
+    #[arg(
+        short = 'w',
+        long = "workers",
+        help = "Override worker count from config"
+    )]
     pub workers: Option<usize>,
 
-    #[arg(long = "save", default_value_t = true, help = "Persist outputs and meta files")]
+    #[arg(
+        long = "save",
+        default_value_t = true,
+        help = "Persist outputs and meta files"
+    )]
     pub save: bool,
 
     #[arg(long = "no-save", help = "Disable persisting outputs and metadata")]
@@ -86,7 +138,10 @@ pub struct CliArgs {
     #[arg(long = "clear-cache", help = "Clear bookmark cache and exit")]
     pub clear_cache: bool,
 
-    #[arg(long = "reset", help = "Full reset: clear all caches and delete output files, then exit")]
+    #[arg(
+        long = "reset",
+        help = "Full reset: clear all caches and delete output files, then exit"
+    )]
     pub reset: bool,
 
     #[arg(long = "cache-stats", help = "Print cache statistics and exit")]
@@ -98,11 +153,22 @@ pub struct CliArgs {
     #[arg(long = "verbose", help = "Print per-bookmark pipeline-stage logs")]
     pub verbose: bool,
 
-    #[arg(long = "daemon-interval", default_value_t = 300, help = "Polling interval in seconds when --daemon is enabled")]
+    #[arg(
+        long = "daemon-interval",
+        default_value_t = 300,
+        help = "Polling interval in seconds when --daemon is enabled"
+    )]
     pub daemon_interval: u64,
 
     #[arg(long = "max-cycles", help = "Maximum daemon cycles before exit")]
     pub max_cycles: Option<usize>,
+
+    #[arg(
+        long = "send-test-email-last",
+        value_name = "COUNT",
+        help = "Send a test notification email using the most recent saved bookmark meta files and exit"
+    )]
+    pub send_test_email_last: Option<usize>,
 
     #[arg(long = "output-dir", help = "Override output directory")]
     pub output_dir: Option<String>,
@@ -211,7 +277,10 @@ fn bookmark_from_text(text: &str, index: usize) -> Bookmark {
 
 fn normalize_bookmark(mut bookmark: Bookmark, source: &str, index: usize) -> Bookmark {
     if bookmark.id.trim().is_empty() {
-        bookmark.id = format!("{source}-{}", deterministic_id(&format!("{source}:{index}:{}", bookmark.text)));
+        bookmark.id = format!(
+            "{source}-{}",
+            deterministic_id(&format!("{source}:{index}:{}", bookmark.text))
+        );
     }
     if bookmark.author.trim().is_empty() {
         bookmark.author = "cli".to_string();
@@ -252,7 +321,13 @@ mod tests {
 
     #[test]
     fn cli_text_inputs_parse_to_bookmarks() {
-        let args = CliArgs::parse_from(["x-bookmarks", "--text", "chart breakout", "--text", "manual note"]);
+        let args = CliArgs::parse_from([
+            "x-bookmarks",
+            "--text",
+            "chart breakout",
+            "--text",
+            "manual note",
+        ]);
         let bookmarks = load_bookmarks(&args).unwrap();
         assert_eq!(bookmarks.len(), 2);
         assert!(bookmarks[0].id.starts_with("text-"));
@@ -286,7 +361,13 @@ mod tests {
 
     #[test]
     fn cli_reauth_flag_is_parsed() {
-        let args = CliArgs::parse_from(["x-bookmarks", "--fetch", "--fetch-username", "alice", "--reauth"]);
+        let args = CliArgs::parse_from([
+            "x-bookmarks",
+            "--fetch",
+            "--fetch-username",
+            "alice",
+            "--reauth",
+        ]);
         assert!(args.reauth);
     }
 
@@ -309,5 +390,11 @@ mod tests {
             args.auth_redirect_uri.as_deref(),
             Some("https://example.com/callback")
         );
+    }
+
+    #[test]
+    fn cli_send_test_email_last_flag_is_parsed() {
+        let args = CliArgs::parse_from(["x-bookmarks", "--send-test-email-last", "10"]);
+        assert_eq!(args.send_test_email_last, Some(10));
     }
 }

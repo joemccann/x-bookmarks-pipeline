@@ -36,10 +36,13 @@ User request: send a test email based on the past 10 bookmarks without re-runnin
 
 ### Task Plan
 
-- [ ] T1 `depends_on: []` Add a one-off CLI path that loads the most recent saved bookmark `.meta.json` files and renders a test notification email from them.
-- [ ] T2 `depends_on: [T1]` Execute the new command for the last 10 bookmarks and confirm the email was sent via configured SMTP settings.
-- [ ] T3 `depends_on: [T1]` Add targeted coverage where it fits and run the full Rust test suite.
+- [x] T1 `depends_on: []` Add a one-off CLI path that loads the most recent saved bookmark `.meta.json` files and renders a test notification email from them.
+- [x] T2 `depends_on: [T1]` Execute the new command for the last 10 bookmarks and confirm the email was sent via configured SMTP settings.
+- [x] T3 `depends_on: [T1]` Add targeted coverage where it fits and run the full Rust test suite.
 
 ## Review
 
-- Pending.
+- Added `--send-test-email-last <COUNT>` so the binary can send a test cycle email from the most recent saved `.meta.json` files without re-running X fetches or LLM stages.
+- Reused the existing email renderer by exposing a render helper in `notify.rs`, then prefixed the subject with `[TEST]` for the one-off send path.
+- Executed `cargo run -- --send-test-email-last 10`, which reported: `test email sent using 10 recent bookmarks from output`.
+- Verification: `cargo test` passed (`84` lib tests, `7` main tests, `1` integration test). Non-fatal warning remains for `cfg(feature = "cdp_live_test")` in `src/browser.rs`.

@@ -40,11 +40,11 @@ impl SmtpNotifier {
         cost_tracker: Option<&CostTracker>,
     ) -> PipelineResult<()> {
         let cost_totals = summarize_costs(cost_tracker);
-        let Some(email) = build_cycle_summary_email(results, &cost_totals) else {
+        let Some((subject, html)) = render_cycle_summary_email(results, &cost_totals) else {
             return Ok(());
         };
 
-        self.send_html(email.subject, email.html).await
+        self.send_html(subject, html).await
     }
 
     pub async fn send_text(&self, subject: String, body: String) -> PipelineResult<()> {
@@ -440,6 +440,13 @@ fn build_cycle_summary_email(
     Some(RenderedCycleSummaryEmail { subject, html })
 }
 
+pub fn render_cycle_summary_email(
+    results: &[PipelineRunResult],
+    cost_totals: &HashMap<String, f64>,
+) -> Option<(String, String)> {
+    build_cycle_summary_email(results, cost_totals).map(|email| (email.subject, email.html))
+}
+
 fn summarize_costs(cost_tracker: Option<&CostTracker>) -> HashMap<String, f64> {
     let mut totals = HashMap::new();
     if let Some(cost_tracker) = cost_tracker {
@@ -545,9 +552,13 @@ mod tests {
         assert_eq!(email.subject, "New bookmarks: 2 (1 errors)");
         assert!(email.html.contains("Total Cost (USD)"));
         assert!(email.html.contains("$0.000312"));
-        assert!(email.html.contains("@media only screen and (max-width: 640px)"));
+        assert!(email
+            .html
+            .contains("@media only screen and (max-width: 640px)"));
         assert!(email.html.contains("Latest daemon cycle"));
-        assert!(email.html.contains("planner failed to produce a valid strategy"));
+        assert!(email
+            .html
+            .contains("planner failed to produce a valid strategy"));
     }
 
     #[test]

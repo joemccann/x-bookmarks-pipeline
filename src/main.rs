@@ -1,32 +1,32 @@
-use std::collections::HashSet;
-use std::{env, fs, path::Path, sync::Arc, time::Duration, time::SystemTime};
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
+use std::{env, fs, path::Path, path::PathBuf, sync::Arc, time::Duration, time::SystemTime};
 
 use anyhow::{Context, Result};
-use clap::Parser;
 use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use clap::Parser;
 use reqwest::Client;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use x_bookmarks_pipeline_rust::browser::{AutoConsentConfig, AutoConsentOutcome};
+use x_bookmarks_pipeline_rust::cost::{generate_cost_report, CostTracker, RunCostSummary};
+use x_bookmarks_pipeline_rust::error::PipelineError;
+use x_bookmarks_pipeline_rust::x_api_cache::{RequestBudget, XApiCache};
 use x_bookmarks_pipeline_rust::{
     cache::BookmarkCache,
     cli::{self, CliArgs},
     config::AppConfig,
-    models::Bookmark,
     fetcher::XBookmarkFetcher,
     llm::{CerebrasProvider, ClaudeProvider, LLMProvider, OpenAIProvider, XaiProvider},
     models::PipelineResult as PipelineResultModel,
-    notify::{EmailConfig, SmtpNotifier},
+    models::{Bookmark, ClassificationResult},
+    notify::{render_cycle_summary_email, EmailConfig, SmtpNotifier},
     orchestrator::{OnMetaSaved, Pipeline},
 };
-use x_bookmarks_pipeline_rust::browser::{AutoConsentConfig, AutoConsentOutcome};
-use x_bookmarks_pipeline_rust::cost::{CostTracker, RunCostSummary, generate_cost_report};
-use x_bookmarks_pipeline_rust::error::PipelineError;
-use x_bookmarks_pipeline_rust::x_api_cache::{XApiCache, RequestBudget};
 
 #[derive(Clone, Debug)]
 struct XRefreshConfig {
@@ -40,6 +40,30 @@ struct OAuthState {
     code_verifier: String,
     state: String,
     redirect_uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SavedBookmarkMeta {
+    tweet_id: String,
+    category: String,
+    #[serde(default)]
+    subcategory: String,
+    #[serde(default)]
+    is_finance: bool,
+    #[serde(default)]
+    summary: String,
+    cost: Option<SavedBookmarkMetaCost>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SavedBookmarkMetaCost {
+    total_cost_usd: Option<Value>,
+}
+
+#[derive(Debug)]
+struct SavedMetaFile {
+    path: PathBuf,
+    modified_at: Duration,
 }
 
 const OAUTH_STATE_FILE: &str = ".x-bookmarks-oauth.json";
@@ -75,8 +99,12 @@ fn env_usize(names: &[&str], default: usize) -> usize {
 }
 
 fn require_env(name: &str, aliases: &[&str]) -> anyhow::Result<String> {
-    env_any(&std::iter::once(name).chain(aliases.iter().copied()).collect::<Vec<_>>())
-        .with_context(|| format!("missing required env var {name}"))
+    env_any(
+        &std::iter::once(name)
+            .chain(aliases.iter().copied())
+            .collect::<Vec<_>>(),
+    )
+    .with_context(|| format!("missing required env var {name}"))
 }
 
 fn load_refresh_config() -> Option<XRefreshConfig> {
@@ -155,10 +183,10 @@ fn load_oauth_client(
         .map(ToString::to_string)
         .or_else(|| {
             env_any(&[
-        "X_REDIRECT_URI",
-        "XPB_X_REDIRECT_URI",
-        "X_OAUTH_REDIRECT_URI",
-        "XPB_X_OAUTH_REDIRECT_URI",
+                "X_REDIRECT_URI",
+                "XPB_X_REDIRECT_URI",
+                "X_OAUTH_REDIRECT_URI",
+                "XPB_X_OAUTH_REDIRECT_URI",
             ])
             .or_else(|| Some("http://localhost:8080/callback".to_string()))
         })
@@ -190,10 +218,8 @@ fn build_oauth_authorization_url(
 ) -> (String, OAuthState) {
     let code_verifier = generate_nonce(64);
     let state = generate_nonce(24);
-    let code_challenge = URL_SAFE_NO_PAD.encode(
-        Sha256::digest(code_verifier.as_bytes())
-            .as_slice(),
-    );
+    let code_challenge =
+        URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()).as_slice());
 
     let url = format!(
         "{OAUTH_AUTH_URL}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
@@ -231,11 +257,7 @@ fn open_in_browser(url: &str) -> bool {
     let status = if cfg!(target_os = "macos") {
         if let Some(app) = &chrome_app {
             // Open URL specifically in the named Chrome app (e.g. "Chrome Debug")
-            Command::new("open")
-                .arg("-a")
-                .arg(app)
-                .arg(url)
-                .status()
+            Command::new("open").arg("-a").arg(app).arg(url).status()
         } else {
             Command::new("open").arg(url).status()
         }
@@ -275,7 +297,11 @@ fn parse_local_redirect(redirect_uri: &str) -> Option<LoopbackRedirect> {
         } else {
             (rest, "/".to_string())
         };
-        let default_port = if redirect_uri.starts_with("https://") { 443 } else { 80 };
+        let default_port = if redirect_uri.starts_with("https://") {
+            443
+        } else {
+            80
+        };
         let (host, port) = if let Some((host, port_text)) = host_port.split_once(':') {
             (host.to_string(), port_text.parse::<u16>().unwrap_or(8765))
         } else {
@@ -386,20 +412,22 @@ fn emit_auth_flow_instructions(
     println!("Using client_id={client_id}");
     println!("Using redirect_uri={redirect_uri}");
     println!("Using scope={scope}");
-    println!(
-        "Or rerun with: cargo run -- --auth-url --auth-redirect-uri '{redirect_uri}'"
-    );
+    println!("Or rerun with: cargo run -- --auth-url --auth-redirect-uri '{redirect_uri}'");
 }
 
-async fn start_interactive_reauth_flow(
-    args: &CliArgs,
-    http: &Client,
-) -> anyhow::Result<bool> {
-    let (client_id, client_secret, redirect_uri) = load_oauth_client(args.auth_redirect_uri.as_deref())?;
+async fn start_interactive_reauth_flow(args: &CliArgs, http: &Client) -> anyhow::Result<bool> {
+    let (client_id, client_secret, redirect_uri) =
+        load_oauth_client(args.auth_redirect_uri.as_deref())?;
     let scope = oauth_scope();
     let (url, state) = build_oauth_authorization_url(&client_id, &redirect_uri, &scope);
     write_oauth_state(&state)?;
-    emit_auth_flow_instructions(&client_id, &redirect_uri, &scope, &state.code_verifier, &url);
+    emit_auth_flow_instructions(
+        &client_id,
+        &redirect_uri,
+        &scope,
+        &state.code_verifier,
+        &url,
+    );
 
     // Spawn CDP auto-consent task concurrently with the callback listener.
     // If a chrome_user_data_dir is configured, the CDP task will connect to
@@ -414,14 +442,16 @@ async fn start_interactive_reauth_flow(
                 poll_interval: Duration::from_millis(500),
             };
             match x_bookmarks_pipeline_rust::browser::auto_click_oauth_consent(cfg).await {
-                Ok(AutoConsentOutcome::Clicked { strategy }) =>
-                    eprintln!("[cdp] auto-consent succeeded via {strategy}"),
-                Ok(AutoConsentOutcome::ManualFallback(reason)) =>
-                    eprintln!("[cdp] auto-consent unavailable: {reason}"),
-                Ok(AutoConsentOutcome::TimedOut) =>
-                    eprintln!("[cdp] auto-consent timed out; waiting for manual click"),
-                Err(e) =>
-                    eprintln!("[cdp] auto-consent error: {e}"),
+                Ok(AutoConsentOutcome::Clicked { strategy }) => {
+                    eprintln!("[cdp] auto-consent succeeded via {strategy}")
+                }
+                Ok(AutoConsentOutcome::ManualFallback(reason)) => {
+                    eprintln!("[cdp] auto-consent unavailable: {reason}")
+                }
+                Ok(AutoConsentOutcome::TimedOut) => {
+                    eprintln!("[cdp] auto-consent timed out; waiting for manual click")
+                }
+                Err(e) => eprintln!("[cdp] auto-consent error: {e}"),
             }
         }))
     } else {
@@ -460,8 +490,9 @@ async fn start_interactive_reauth_flow(
     clear_oauth_state();
     println!("OAuth exchange succeeded and token updated.");
 
-    // Close only the OAuth callback tab in Chrome (not all localhost tabs)
-    x_bookmarks_pipeline_rust::browser::close_oauth_callback_tab().await;
+    // Note: We intentionally do NOT auto-close any browser tabs after OAuth.
+    // Previous attempts to close only the callback tab were unreliable and
+    // risked closing unrelated localhost tabs (dev servers, etc.).
 
     Ok(true)
 }
@@ -508,7 +539,7 @@ async fn resolve_fetch_user_id_api(
     username: &str,
 ) -> anyhow::Result<String> {
     eprintln!("[x-api] resolving @{username} -> user_id (cost: ~$0.01)");
-    
+
     let response = client
         .get(format!("https://api.x.com/2/users/by/username/{username}"))
         .bearer_auth(token)
@@ -539,15 +570,23 @@ async fn resolve_fetch_user_id_api(
         .and_then(|errors| errors.first())
         .and_then(|error| error.get("message").and_then(Value::as_str))
     {
-        return Err(anyhow::anyhow!("failed to resolve username {username}: {message}"));
+        return Err(anyhow::anyhow!(
+            "failed to resolve username {username}: {message}"
+        ));
     }
 
-    Err(anyhow::anyhow!("failed to resolve username {username}: no user id returned"))
+    Err(anyhow::anyhow!(
+        "failed to resolve username {username}: no user id returned"
+    ))
 }
 
 fn is_auth_expired_error(err: &anyhow::Error) -> bool {
     let error = err.to_string().to_lowercase();
-    error.contains("authentication") || error.contains("unsupported authentication") || error.contains("expired") || error.contains("forbidden") || error.contains("unauthorized")
+    error.contains("authentication")
+        || error.contains("unsupported authentication")
+        || error.contains("expired")
+        || error.contains("forbidden")
+        || error.contains("unauthorized")
 }
 
 async fn refresh_x_access_token(
@@ -594,10 +633,7 @@ async fn refresh_x_access_token(
         .map(ToString::to_string)
         .ok_or_else(|| anyhow::anyhow!("token refresh response missing access_token"))?;
 
-    if let Some(new_refresh) = body
-        .get("refresh_token")
-        .and_then(Value::as_str)
-    {
+    if let Some(new_refresh) = body.get("refresh_token").and_then(Value::as_str) {
         refresh_config.refresh_token = new_refresh.to_string();
     }
 
@@ -628,15 +664,15 @@ async fn exchange_authorization_code(
         client.post("https://api.x.com/2/oauth2/token").form(&form)
     };
 
-    let response = request
-        .send()
-        .await?;
+    let response = request.send().await?;
 
     let status = response.status();
     let payload = response.text().await?;
 
     if status != StatusCode::OK {
-        return Err(anyhow::anyhow!("token exchange failed ({status}): {payload}"));
+        return Err(anyhow::anyhow!(
+            "token exchange failed ({status}): {payload}"
+        ));
     }
 
     let body: Value = serde_json::from_str(&payload)?;
@@ -654,7 +690,10 @@ async fn exchange_authorization_code(
         .map(ToString::to_string)
         .ok_or_else(|| anyhow::anyhow!("token exchange response missing access_token"))?;
 
-    let refresh_token = body.get("refresh_token").and_then(Value::as_str).map(ToString::to_string);
+    let refresh_token = body
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
 
     Ok((access_token, refresh_token))
 }
@@ -716,10 +755,7 @@ fn persist_refreshed_access_token(
         "XPB_X_ACCESS_TOKEN",
         "XPB_X_USER_ACCESS_TOKEN",
     ];
-    let refresh_keys = [
-        "X_REFRESH_TOKEN",
-        "XPB_X_REFRESH_TOKEN",
-    ];
+    let refresh_keys = ["X_REFRESH_TOKEN", "XPB_X_REFRESH_TOKEN"];
 
     let mut lines: Vec<String> = Vec::new();
     let mut access_touched = false;
@@ -767,8 +803,6 @@ fn persist_refreshed_access_token(
     Ok(true)
 }
 
-
-
 async fn ensure_cli_authentication(
     args: &CliArgs,
     http: &Client,
@@ -812,12 +846,15 @@ async fn ensure_cli_authentication(
     if let Some(refresh_cfg) = refresh_config.as_mut() {
         match refresh_x_access_token(http, refresh_cfg).await {
             Ok(fresh_token) => {
-                let _ = persist_refreshed_access_token(&fresh_token, Some(&refresh_cfg.refresh_token));
+                let _ =
+                    persist_refreshed_access_token(&fresh_token, Some(&refresh_cfg.refresh_token));
                 println!("refreshed token during auth gate");
                 return Ok(());
             }
             Err(err) => {
-                eprintln!("token refresh failed during auth gate ({err}); launching browser reauth");
+                eprintln!(
+                    "token refresh failed during auth gate ({err}); launching browser reauth"
+                );
             }
         }
     }
@@ -863,7 +900,7 @@ async fn is_access_token_valid_cached(
 /// Make the actual API call to validate token (costs $0.01)
 async fn is_access_token_valid_api(client: &Client, token: &str) -> anyhow::Result<bool> {
     eprintln!("[x-api] validating token via /users/me (cost: ~$0.01)");
-    
+
     let response = client
         .get("https://api.x.com/2/users/me")
         .bearer_auth(token)
@@ -875,7 +912,9 @@ async fn is_access_token_valid_api(client: &Client, token: &str) -> anyhow::Resu
     }
     if !status.is_success() {
         let payload = response.text().await?;
-        return Err(anyhow::anyhow!("token validation failed ({status}): {payload}"));
+        return Err(anyhow::anyhow!(
+            "token validation failed ({status}): {payload}"
+        ));
     }
     Ok(true)
 }
@@ -902,7 +941,9 @@ async fn resolve_fetch_user_id_with_refresh(
                             resolve_fetch_user_id_cached(client, token, username, x_api_cache).await
                         }
                         Err(refresh_error) => {
-                            eprintln!("token refresh failed: {refresh_error}; trying existing token");
+                            eprintln!(
+                                "token refresh failed: {refresh_error}; trying existing token"
+                            );
                             resolve_fetch_user_id_cached(client, token, username, x_api_cache)
                                 .await
                                 .with_context(|| {
@@ -926,13 +967,15 @@ fn build_notifier() -> Option<Arc<SmtpNotifier>> {
         env_any(&["SMTP_FROM", "EMAIL_FROM", "XPB_SMTP_FROM"]),
         env_any(&["SMTP_TO", "EMAIL_TO", "XPB_SMTP_TO"]),
     ) {
-        (Some(host), Some(user), Some(password), Some(from), Some(to)) => Some(Arc::new(SmtpNotifier::new(EmailConfig {
-            smtp_host: host,
-            smtp_user: user,
-            smtp_password: password,
-            from,
-            to,
-        }))),
+        (Some(host), Some(user), Some(password), Some(from), Some(to)) => {
+            Some(Arc::new(SmtpNotifier::new(EmailConfig {
+                smtp_host: host,
+                smtp_user: user,
+                smtp_password: password,
+                from,
+                to,
+            })))
+        }
         _ => None,
     }
 }
@@ -957,33 +1000,39 @@ async fn build_fetcher(
             .timeout(Duration::from_secs(cfg.fetch_timeout.round() as u64))
             .build()?;
 
-        let (mut access_token, refreshed_from_reauth) =
-            match acquire_access_token(&client, refresh_config, token, args.reauth).await {
-                Ok(result) => result,
-                Err(err) if args.reauth => {
-                    eprintln!("reauth token refresh failed ({err}); launching browser login");
-                    if start_interactive_reauth_flow(args, &client).await? {
-                        (
-                            env_any(&[
-                                "X_BEARER_TOKEN",
-                                "X_ACCESS_TOKEN",
-                                "X_USER_ACCESS_TOKEN",
-                                "XPB_X_BEARER_TOKEN",
-                                "XPB_X_USER_ACCESS_TOKEN",
-                            ])
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "browser reauth completed, but no access token is now configured"
-                                )
-                            })?,
-                            true,
-                        )
-                    } else {
-                        return Err(err);
-                    }
+        let (mut access_token, refreshed_from_reauth) = match acquire_access_token(
+            &client,
+            refresh_config,
+            token,
+            args.reauth,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(err) if args.reauth => {
+                eprintln!("reauth token refresh failed ({err}); launching browser login");
+                if start_interactive_reauth_flow(args, &client).await? {
+                    (
+                        env_any(&[
+                            "X_BEARER_TOKEN",
+                            "X_ACCESS_TOKEN",
+                            "X_USER_ACCESS_TOKEN",
+                            "XPB_X_BEARER_TOKEN",
+                            "XPB_X_USER_ACCESS_TOKEN",
+                        ])
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "browser reauth completed, but no access token is now configured"
+                            )
+                        })?,
+                        true,
+                    )
+                } else {
+                    return Err(err);
                 }
-                Err(err) => return Err(err),
-            };
+            }
+            Err(err) => return Err(err),
+        };
         // Always persist rotated tokens so the daemon's next cycle can use them
         if refreshed_from_reauth || args.reauth {
             // Clear token validation cache after refresh
@@ -992,7 +1041,9 @@ async fn build_fetcher(
             }
             match persist_refreshed_access_token(
                 &access_token,
-                refresh_config.as_ref().map(|cfg| cfg.refresh_token.as_str()),
+                refresh_config
+                    .as_ref()
+                    .map(|cfg| cfg.refresh_token.as_str()),
             ) {
                 Ok(true) => {
                     if args.reauth {
@@ -1001,7 +1052,9 @@ async fn build_fetcher(
                 }
                 Ok(false) => {
                     if args.reauth {
-                        println!("reauth completed for this process (no .env file found to update)");
+                        println!(
+                            "reauth completed for this process (no .env file found to update)"
+                        );
                     }
                 }
                 Err(err) => {
@@ -1022,14 +1075,16 @@ async fn build_fetcher(
             .or_else(|| env_any(&["X_FETCH_USERNAME", "XPB_X_FETCH_USERNAME"]))
         {
             let username = normalize_x_username(&username);
-            Some(resolve_fetch_user_id_with_refresh(
-                &client,
-                &username,
-                &mut access_token,
-                refresh_config,
-                x_api_cache,
+            Some(
+                resolve_fetch_user_id_with_refresh(
+                    &client,
+                    &username,
+                    &mut access_token,
+                    refresh_config,
+                    x_api_cache,
+                )
+                .await?,
             )
-            .await?)
         } else {
             None
         };
@@ -1090,50 +1145,57 @@ async fn run_cycle(
         let _ = api_cache.reset_cycle();
     }
 
-    let bookmarks = if let Some(fetcher) = fetcher {
-        // Build set of cached bookmark IDs for incremental fetching
-        let cached_ids: HashSet<String> = if let Some(cache) = cache {
-            // Get all completed bookmark IDs from cache
-            // This allows the fetcher to skip pages of already-seen content
-            get_cached_bookmark_ids(cache).await
-        } else {
-            HashSet::new()
-        };
+    let bookmarks =
+        if let Some(fetcher) = fetcher {
+            // Build set of cached bookmark IDs for incremental fetching
+            let cached_ids: HashSet<String> = if let Some(cache) = cache {
+                // Get all completed bookmark IDs from cache
+                // This allows the fetcher to skip pages of already-seen content
+                get_cached_bookmark_ids(cache).await
+            } else {
+                HashSet::new()
+            };
 
-        let suppress_retry = preflight_refresh_fetcher_token_cached(
-            fetcher,
-            fetch_client,
-            refresh_config,
-            args.reauth,
-            args,
-            x_api_cache,
-            cfg,
-        )
-        .await?;
+            let suppress_retry = preflight_refresh_fetcher_token_cached(
+                fetcher,
+                fetch_client,
+                refresh_config,
+                args.reauth,
+                args,
+                x_api_cache,
+                cfg,
+            )
+            .await?;
 
-        if suppress_retry {
-            // Use incremental fetch to minimize API calls
-            let (bookmarks, stats) = fetcher.fetch_incremental(&cached_ids).await?;
-            eprintln!(
+            if suppress_retry {
+                // Use incremental fetch to minimize API calls
+                let (bookmarks, stats) = fetcher.fetch_incremental(&cached_ids).await?;
+                eprintln!(
                 "[x-api] fetch stats: {} requests, {} fetched, {} new, early_stop={}, cost=${:.4}",
                 stats.api_requests, stats.total_fetched, stats.new_bookmarks,
                 stats.early_stopped, stats.estimated_cost
             );
 
-            // Record the API request cost
-            if let Some(api_cache) = x_api_cache {
-                let _ = api_cache.record_request(stats.estimated_cost);
-            }
+                // Record the API request cost
+                if let Some(api_cache) = x_api_cache {
+                    let _ = api_cache.record_request(stats.estimated_cost);
+                }
 
-            bookmarks
+                bookmarks
+            } else {
+                fetch_bookmarks_with_refresh_incremental(
+                    fetcher,
+                    fetch_client,
+                    refresh_config,
+                    args,
+                    &cached_ids,
+                    x_api_cache,
+                )
+                .await?
+            }
         } else {
-            fetch_bookmarks_with_refresh_incremental(
-                fetcher, fetch_client, refresh_config, args, &cached_ids, x_api_cache,
-            ).await?
-        }
-    } else {
-        cli::load_bookmarks(args)?
-    };
+            cli::load_bookmarks(args)?
+        };
 
     // The incremental fetch already filters out cached bookmarks,
     // but we still need to check if any slipped through
@@ -1156,14 +1218,21 @@ async fn run_cycle(
         bookmarks
     };
 
-    let results = pipeline.clone().run_batch(bookmarks, args.should_save()).await;
+    let results = pipeline
+        .clone()
+        .run_batch(bookmarks, args.should_save())
+        .await;
     println!("processed {} bookmarks", results.len());
     for result in &results {
         println!(
             "{} => has_script={}, error={}",
             result.tweet_id,
             !result.pine_script.is_empty(),
-            if result.error.is_empty() { "none" } else { &result.error }
+            if result.error.is_empty() {
+                "none"
+            } else {
+                &result.error
+            }
         );
     }
 
@@ -1199,8 +1268,11 @@ async fn fetch_bookmarks_with_refresh_incremental(
         Ok((bookmarks, stats)) => {
             eprintln!(
                 "[x-api] fetch stats: {} requests, {} fetched, {} new, early_stop={}, cost=${:.4}",
-                stats.api_requests, stats.total_fetched, stats.new_bookmarks,
-                stats.early_stopped, stats.estimated_cost
+                stats.api_requests,
+                stats.total_fetched,
+                stats.new_bookmarks,
+                stats.early_stopped,
+                stats.estimated_cost
             );
             if let Some(api_cache) = x_api_cache {
                 let _ = api_cache.record_request(stats.estimated_cost);
@@ -1260,11 +1332,9 @@ async fn fetch_bookmarks_with_refresh_incremental(
                 if let Some(cache) = x_api_cache {
                     cache.clear_token_validation();
                 }
-                if let Some(token) = env_any(&[
-                    "X_BEARER_TOKEN",
-                    "X_ACCESS_TOKEN",
-                    "X_USER_ACCESS_TOKEN",
-                ]) {
+                if let Some(token) =
+                    env_any(&["X_BEARER_TOKEN", "X_ACCESS_TOKEN", "X_USER_ACCESS_TOKEN"])
+                {
                     fetcher.set_access_token(token).await;
                 }
                 let (bookmarks, stats) = fetcher.fetch_incremental(cached_ids).await?;
@@ -1301,7 +1371,9 @@ async fn preflight_refresh_fetcher_token_cached(
 
     // Use cached token validation to avoid $0.01/call
     let cache_duration = Duration::from_secs(cfg.token_validation_cache_seconds);
-    if is_access_token_valid_cached(fetch_client, &current_token, x_api_cache, cache_duration).await? {
+    if is_access_token_valid_cached(fetch_client, &current_token, x_api_cache, cache_duration)
+        .await?
+    {
         return Ok(false);
     }
 
@@ -1334,9 +1406,9 @@ async fn preflight_refresh_fetcher_token_cached(
                 if let Some(cache) = x_api_cache {
                     cache.clear_token_validation();
                 }
-                if let Some(new_access) = env_any(&[
-                    "X_BEARER_TOKEN", "X_ACCESS_TOKEN", "X_USER_ACCESS_TOKEN",
-                ]) {
+                if let Some(new_access) =
+                    env_any(&["X_BEARER_TOKEN", "X_ACCESS_TOKEN", "X_USER_ACCESS_TOKEN"])
+                {
                     fetcher.set_access_token(new_access).await;
                 }
                 return Ok(false);
@@ -1353,7 +1425,7 @@ async fn preflight_refresh_fetcher_token_cached(
     }
 
     fetcher.set_access_token(new_token.clone()).await;
-    
+
     // Validate the fresh token (this will be cached)
     if !is_access_token_valid_cached(fetch_client, &new_token, x_api_cache, cache_duration).await? {
         return Err(anyhow::anyhow!(
@@ -1378,8 +1450,10 @@ fn write_cost_report(
     }
 
     // Build per-bookmark summaries
-    let mut bookmark_entries: std::collections::HashMap<String, Vec<x_bookmarks_pipeline_rust::cost::CostEntry>> =
-        std::collections::HashMap::new();
+    let mut bookmark_entries: std::collections::HashMap<
+        String,
+        Vec<x_bookmarks_pipeline_rust::cost::CostEntry>,
+    > = std::collections::HashMap::new();
     for entry in &entries {
         bookmark_entries
             .entry(entry.bookmark_id.clone())
@@ -1426,6 +1500,109 @@ fn write_cost_report(
     Ok(())
 }
 
+fn collect_saved_meta_files(dir: &Path, out: &mut Vec<SavedMetaFile>) -> anyhow::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("reading saved bookmark directory {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_saved_meta_files(&path, out)?;
+            continue;
+        }
+
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json")
+            || !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".meta.json"))
+        {
+            continue;
+        }
+
+        let modified_at = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .unwrap_or_default();
+        out.push(SavedMetaFile { path, modified_at });
+    }
+
+    Ok(())
+}
+
+fn parse_saved_cost_total(cost: Option<&SavedBookmarkMetaCost>) -> f64 {
+    cost.and_then(|cost| cost.total_cost_usd.as_ref())
+        .and_then(|value| match value {
+            Value::String(value) => value.parse::<f64>().ok(),
+            Value::Number(value) => value.as_f64(),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn load_recent_saved_results(
+    output_dir: &Path,
+    limit: usize,
+) -> anyhow::Result<(Vec<PipelineResultModel>, HashMap<String, f64>)> {
+    if limit == 0 {
+        return Err(anyhow::anyhow!(
+            "--send-test-email-last must be greater than zero"
+        ));
+    }
+
+    let mut saved_meta_files = Vec::new();
+    collect_saved_meta_files(output_dir, &mut saved_meta_files)?;
+    saved_meta_files.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+
+    if saved_meta_files.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no saved bookmark meta files found under {}",
+            output_dir.display()
+        ));
+    }
+
+    let mut results = Vec::new();
+    let mut cost_totals = HashMap::new();
+
+    for saved_meta in saved_meta_files.into_iter().take(limit) {
+        let raw = std::fs::read_to_string(&saved_meta.path)
+            .with_context(|| format!("reading {}", saved_meta.path.display()))?;
+        let meta: SavedBookmarkMeta = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", saved_meta.path.display()))?;
+
+        let total_cost = parse_saved_cost_total(meta.cost.as_ref());
+        let mut result = PipelineResultModel::new(meta.tweet_id.clone());
+        result.classification = Some(ClassificationResult {
+            tweet_id: meta.tweet_id.clone(),
+            is_finance: meta.is_finance,
+            confidence: 1.0,
+            classification_source: "saved_meta".to_string(),
+            has_trading_pattern: false,
+            has_visual_data: false,
+            category: meta.category,
+            subcategory: meta.subcategory,
+            detected_topic: String::new(),
+            summary: if meta.summary.trim().is_empty() {
+                "No summary available.".to_string()
+            } else {
+                meta.summary
+            },
+            raw_text: String::new(),
+            image_urls: Vec::new(),
+        });
+        cost_totals.insert(meta.tweet_id.clone(), total_cost);
+        results.push(result);
+    }
+
+    Ok((results, cost_totals))
+}
+
 fn pipeline_providers(
     shared_http: Client,
     cost_tracker: Option<&x_bookmarks_pipeline_rust::cost::CostTracker>,
@@ -1435,22 +1612,12 @@ fn pipeline_providers(
     Arc<dyn LLMProvider>,
     Arc<dyn LLMProvider>,
 )> {
-    let mut cerebras = CerebrasProvider::new(
-        require_env("CEREBRAS_API_KEY", &[])?,
-        shared_http.clone(),
-    );
-    let mut xai = XaiProvider::new(
-        require_env("XAI_API_KEY", &[])?,
-        shared_http.clone(),
-    );
-    let mut claude = ClaudeProvider::new(
-        require_env("ANTHROPIC_API_KEY", &[])?,
-        shared_http.clone(),
-    );
-    let mut openai = OpenAIProvider::new(
-        require_env("OPENAI_API_KEY", &[])?,
-        shared_http,
-    );
+    let mut cerebras =
+        CerebrasProvider::new(require_env("CEREBRAS_API_KEY", &[])?, shared_http.clone());
+    let mut xai = XaiProvider::new(require_env("XAI_API_KEY", &[])?, shared_http.clone());
+    let mut claude =
+        ClaudeProvider::new(require_env("ANTHROPIC_API_KEY", &[])?, shared_http.clone());
+    let mut openai = OpenAIProvider::new(require_env("OPENAI_API_KEY", &[])?, shared_http);
 
     if let Some(tracker) = cost_tracker {
         cerebras.set_cost_tracker(tracker.clone());
@@ -1468,24 +1635,32 @@ fn pipeline_providers(
 }
 
 fn has_processing_inputs(args: &CliArgs) -> bool {
-    args.fetch || args.file.is_some() || !args.text.is_empty()
+    args.fetch
+        || args.file.is_some()
+        || !args.text.is_empty()
+        || args.send_test_email_last.is_some()
 }
 
-async fn handle_oauth_commands(
-    args: &CliArgs,
-    http: &Client,
-) -> anyhow::Result<bool> {
+async fn handle_oauth_commands(args: &CliArgs, http: &Client) -> anyhow::Result<bool> {
     if args.auth_url {
-        let (client_id, _client_secret, redirect_uri) = load_oauth_client(args.auth_redirect_uri.as_deref())?;
+        let (client_id, _client_secret, redirect_uri) =
+            load_oauth_client(args.auth_redirect_uri.as_deref())?;
         let scope = oauth_scope();
         let (url, state) = build_oauth_authorization_url(&client_id, &redirect_uri, &scope);
         write_oauth_state(&state)?;
-        emit_auth_flow_instructions(&client_id, &redirect_uri, &scope, &state.code_verifier, &url);
+        emit_auth_flow_instructions(
+            &client_id,
+            &redirect_uri,
+            &scope,
+            &state.code_verifier,
+            &url,
+        );
         return Ok(true);
     }
 
     if let Some(code) = args.auth_code.as_deref() {
-        let (client_id, client_secret, redirect_uri) = load_oauth_client(args.auth_redirect_uri.as_deref())?;
+        let (client_id, client_secret, redirect_uri) =
+            load_oauth_client(args.auth_redirect_uri.as_deref())?;
         let verifier = if let Some(verifier) = args.auth_code_verifier.as_deref() {
             verifier.to_string()
         } else {
@@ -1502,10 +1677,7 @@ async fn handle_oauth_commands(
             client_secret,
         )
         .await?;
-        let wrote = persist_refreshed_access_token(
-            &access_token,
-            refresh_token.as_deref(),
-        )?;
+        let wrote = persist_refreshed_access_token(&access_token, refresh_token.as_deref())?;
         env::set_var("X_BEARER_TOKEN", &access_token);
         env::set_var("X_ACCESS_TOKEN", &access_token);
         env::set_var("X_USER_ACCESS_TOKEN", &access_token);
@@ -1552,7 +1724,10 @@ async fn main() -> Result<()> {
     let cache: Option<BookmarkCache> = if args.no_cache {
         None
     } else {
-        Some(BookmarkCache::new(&cfg.cache_path).with_context(|| format!("opening cache {}", cfg.cache_path))?)
+        Some(
+            BookmarkCache::new(&cfg.cache_path)
+                .with_context(|| format!("opening cache {}", cfg.cache_path))?,
+        )
     };
 
     // Initialize X API cache for cost optimization
@@ -1572,9 +1747,21 @@ async fn main() -> Result<()> {
                 if max_per_cycle > 0 || max_per_day > 0 || max_cost_per_day > 0.0 {
                     eprintln!(
                         "[x-api] budget limits: cycle={}, day={}, cost=${:.2}/day",
-                        if max_per_cycle == 0 { "∞".to_string() } else { max_per_cycle.to_string() },
-                        if max_per_day == 0 { "∞".to_string() } else { max_per_day.to_string() },
-                        if max_cost_per_day == 0.0 { f64::INFINITY } else { max_cost_per_day }
+                        if max_per_cycle == 0 {
+                            "∞".to_string()
+                        } else {
+                            max_per_cycle.to_string()
+                        },
+                        if max_per_day == 0 {
+                            "∞".to_string()
+                        } else {
+                            max_per_day.to_string()
+                        },
+                        if max_cost_per_day == 0.0 {
+                            f64::INFINITY
+                        } else {
+                            max_cost_per_day
+                        }
                     );
                 }
                 Some(cache)
@@ -1595,7 +1782,7 @@ async fn main() -> Result<()> {
     }
 
     let mut refresh_config = load_refresh_config();
-    
+
     // Handle --clear-cache (bookmark cache only)
     if args.clear_cache {
         if let Some(cache) = &cache {
@@ -1610,13 +1797,13 @@ async fn main() -> Result<()> {
     // Handle --reset (full reset: all caches + output files)
     if args.reset {
         println!("Performing full reset...\n");
-        
+
         // 1. Clear bookmark cache
         if let Some(cache) = &cache {
             let removed = cache.clear().await?;
             println!("✓ Bookmark cache cleared: {removed} entries");
         }
-        
+
         // 2. Clear X API cache (delete the file)
         let x_api_cache_path = std::path::Path::new(&cfg.x_api_cache_path);
         if x_api_cache_path.exists() {
@@ -1627,15 +1814,19 @@ async fn main() -> Result<()> {
         } else {
             println!("✓ X API cache: not present");
         }
-        
+
         // 3. Delete output directory contents
         let output_path = std::path::Path::new(&cfg.output_dir);
         if output_path.exists() {
             let mut files_deleted = 0u64;
             let mut dirs_deleted = 0u64;
-            
+
             // Count and delete
-            fn count_and_delete(path: &std::path::Path, files: &mut u64, dirs: &mut u64) -> std::io::Result<()> {
+            fn count_and_delete(
+                path: &std::path::Path,
+                files: &mut u64,
+                dirs: &mut u64,
+            ) -> std::io::Result<()> {
                 if path.is_dir() {
                     for entry in std::fs::read_dir(path)? {
                         let entry = entry?;
@@ -1652,23 +1843,51 @@ async fn main() -> Result<()> {
                 }
                 Ok(())
             }
-            
+
             match count_and_delete(output_path, &mut files_deleted, &mut dirs_deleted) {
-                Ok(_) => println!("✓ Output directory deleted: {files_deleted} files, {dirs_deleted} directories"),
+                Ok(_) => println!(
+                    "✓ Output directory deleted: {files_deleted} files, {dirs_deleted} directories"
+                ),
                 Err(e) => eprintln!("✗ Failed to fully delete output directory: {e}"),
             }
         } else {
             println!("✓ Output directory: not present");
         }
-        
+
         // 4. Summary
         println!("\n✓ Full reset complete. Ready to start fresh.");
         return Ok(());
     }
 
+    if let Some(limit) = args.send_test_email_last {
+        let notifier = build_notifier().ok_or_else(|| {
+            anyhow::anyhow!(
+                "notifications disabled (set SMTP_HOST/SMTP_USER/SMTP_PASS or SMTP_PASSWORD/SMTP_FROM/SMTP_TO or EMAIL_TO)"
+            )
+        })?;
+        let (results, cost_totals) = load_recent_saved_results(Path::new(&cfg.output_dir), limit)?;
+        let selected = results.len();
+        let (subject, html) = render_cycle_summary_email(&results, &cost_totals)
+            .ok_or_else(|| anyhow::anyhow!("no recent bookmarks were available to render"))?;
+        let subject = format!("[TEST] {subject}");
+        notifier.send_html(subject.clone(), html).await?;
+        println!(
+            "test email sent using {selected} recent bookmarks from {}",
+            cfg.output_dir
+        );
+        return Ok(());
+    }
+
     let daemon_mode = args.daemon || env_flag(&["XPB_DAEMON", "DAEMON_MODE"]);
 
-    ensure_cli_authentication(&args, &shared_http, &mut refresh_config, x_api_cache.as_ref(), &cfg).await?;
+    ensure_cli_authentication(
+        &args,
+        &shared_http,
+        &mut refresh_config,
+        x_api_cache.as_ref(),
+        &cfg,
+    )
+    .await?;
     // Reload refresh config after auth gate — OAuth flow may have persisted new tokens
     refresh_config = load_refresh_config();
 
@@ -1690,7 +1909,14 @@ async fn main() -> Result<()> {
 
     let cost_tracker = CostTracker::new();
     let providers = pipeline_providers(shared_http.clone(), Some(&cost_tracker))?;
-    let mut fetcher = build_fetcher(&args, &cfg, &mut refresh_config, x_api_cache.as_ref(), daemon_mode).await?;
+    let mut fetcher = build_fetcher(
+        &args,
+        &cfg,
+        &mut refresh_config,
+        x_api_cache.as_ref(),
+        daemon_mode,
+    )
+    .await?;
     let notifier = build_notifier();
     if notifier.is_some() {
         println!("notifications enabled");
@@ -1747,11 +1973,18 @@ async fn main() -> Result<()> {
 
     if !daemon_mode {
         let results = run_cycle(
-            &pipeline, &mut fetcher, &shared_http, &mut refresh_config,
-            &args, &cache, x_api_cache.as_ref(), &cfg
-        ).await?;
+            &pipeline,
+            &mut fetcher,
+            &shared_http,
+            &mut refresh_config,
+            &args,
+            &cache,
+            x_api_cache.as_ref(),
+            &cfg,
+        )
+        .await?;
         write_cost_report(&cost_tracker, &results, &cfg.output_dir)?;
-        
+
         // Print final X API stats
         if let Some(ref api_cache) = x_api_cache {
             if let Ok(stats) = api_cache.get_stats() {
@@ -1763,8 +1996,7 @@ async fn main() -> Result<()> {
 
     eprintln!(
         "[daemon] starting with interval={}s, max_cycles={:?}",
-        daemon_interval,
-        max_cycles
+        daemon_interval, max_cycles
     );
 
     let mut cycle = 0usize;
@@ -1792,7 +2024,9 @@ async fn main() -> Result<()> {
                 credits_depleted_notified = false;
                 if let Some(notifier) = &notifier {
                     if !results.is_empty() {
-                        let _ = notifier.send_cycle_summary(&results, Some(&cost_tracker)).await;
+                        let _ = notifier
+                            .send_cycle_summary(&results, Some(&cost_tracker))
+                            .await;
                     }
                 }
             }
@@ -1863,7 +2097,10 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use std::env;
+    use std::fs;
+    use std::process;
     use std::sync::{Mutex, MutexGuard};
+    use std::thread;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -1894,6 +2131,16 @@ mod tests {
 
     fn lock_env() -> MutexGuard<'static, ()> {
         ENV_LOCK.lock().unwrap()
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|time| time.as_nanos())
+            .unwrap_or(0);
+        path.push(format!("x-bp-main-{name}-{}-{nanos}", process::id()));
+        path
     }
 
     #[test]
@@ -1951,5 +2198,59 @@ mod tests {
         let cfg = load_refresh_config().unwrap();
         assert_eq!(cfg.refresh_token, "rt-123");
         assert_eq!(cfg.client_id, "cid-456");
+    }
+
+    #[test]
+    fn has_processing_inputs_includes_send_test_email_last() {
+        let args = CliArgs::parse_from(["x-bookmarks", "--send-test-email-last", "10"]);
+        assert!(has_processing_inputs(&args));
+    }
+
+    #[test]
+    fn load_recent_saved_results_reads_latest_meta_files() {
+        let output_dir = temp_dir("recent-meta");
+        let older_dir = output_dir.join("technology").join("ai");
+        let newer_dir = output_dir.join("technology").join("web_dev");
+        fs::create_dir_all(&older_dir).unwrap();
+        fs::create_dir_all(&newer_dir).unwrap();
+
+        let older_path = older_dir.join("older.meta.json");
+        fs::write(
+            &older_path,
+            serde_json::json!({
+                "tweet_id": "older-tweet",
+                "category": "technology",
+                "subcategory": "ai",
+                "is_finance": false,
+                "summary": "Older saved bookmark.",
+                "cost": { "total_cost_usd": "0.001200" }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        thread::sleep(Duration::from_millis(20));
+
+        let newer_path = newer_dir.join("newer.meta.json");
+        fs::write(
+            &newer_path,
+            serde_json::json!({
+                "tweet_id": "newer-tweet",
+                "category": "technology",
+                "subcategory": "web_dev",
+                "is_finance": false,
+                "summary": "Newer saved bookmark.",
+                "cost": { "total_cost_usd": "0.003400" }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (results, cost_totals) = load_recent_saved_results(&output_dir, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tweet_id, "newer-tweet");
+        assert_eq!(cost_totals.get("newer-tweet"), Some(&0.0034));
+
+        let _ = fs::remove_dir_all(&output_dir);
     }
 }
