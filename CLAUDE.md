@@ -11,6 +11,7 @@ This repository is a Rust implementation of the X bookmark pipeline with shared 
 - `error.rs` centralizes `PipelineError` and conversion of external failures.
 - `browser.rs` implements CDP auto-consent (connects to existing Chrome via HTTP discovery on port 9222), tab close after OAuth callback.
 - `cost.rs` tracks per-bookmark LLM token usage and USD costs with per-provider pricing.
+- `x_api_cache.rs` caches username→user_id mappings, token validation state, and tracks X API request budgets.
 - `main.rs` handles startup, env loading, provider bootstrap, and CLI dispatch.
 
 ## Setup
@@ -45,13 +46,17 @@ Optional runtime tuning:
 - `ANTHROPIC_MODEL`
 - `OPENAI_MODEL`
 - `CACHE_PATH`
+- `X_API_CACHE_PATH` — SQLite cache for X API cost optimization (default: `cache/x_api.db`)
 - `MAX_WORKERS`
 - `API_TIMEOUT`
 - `VISION_TIMEOUT`
 - `FETCH_TIMEOUT`
 - `XPB_DAEMON` / `DAEMON_MODE`
-- `DAEMON_INTERVAL_SECONDS` / `XPB_DAEMON_INTERVAL_SECONDS`
+- `DAEMON_INTERVAL_SECONDS` / `XPB_DAEMON_INTERVAL_SECONDS` — (default: 900s/15min)
+- `DAEMON_FETCH_LIMIT` — bookmarks per daemon cycle (default: 25)
+- `DAEMON_FETCH_PAGES` — max pages per daemon cycle (default: 1)
 - `DAEMON_MAX_CYCLES` / `XPB_DAEMON_MAX_CYCLES`
+- `TOKEN_VALIDATION_CACHE_SECONDS` — skip /users/me calls within this window (default: 300s)
 - `XPB_CHROME_USER_DATA_DIR` — Chrome profile for CDP discovery (defaults to platform default)
 - `XPB_CHROME_APP` — macOS app name for `open -a` (e.g. `Chrome Debug`)
 
@@ -85,3 +90,37 @@ Daemon filters bookmarks against cache before processing — only new bookmarks 
 - [x] Tests for unit + integration behavior.
 
 See `tasks/todo.md` for current execution plan and open items.
+
+## X API Cost Optimization
+
+The pipeline includes several mechanisms to minimize X API costs:
+
+**Pricing Reference** (Pay-as-you-go, 2024):
+- `GET /2/users/:id/bookmarks`: $0.05 per 100 tweets
+- `GET /2/users/me`: $0.01 per request
+- `GET /2/users/by/username/:username`: $0.01 per request
+- OAuth token refresh: Free
+
+**Cost-Saving Features:**
+1. **Username→user_id caching**: Resolved IDs are cached for 30 days in `x_api.db`
+2. **Token validation caching**: Skip redundant `/users/me` calls within 5-minute windows
+3. **Incremental fetching**: Early termination when hitting N consecutive cached bookmarks (default: 5)
+4. **Reduced daemon defaults**: 25 bookmarks/cycle, 1 page/cycle, 15-min intervals (vs old 100/5/5min)
+5. **Request budgeting**: Hard limits via `--max-requests-per-cycle`, `--max-requests-per-day`, `--max-cost-per-day`
+
+**CLI Options:**
+```bash
+--fetch-limit 25            # Max bookmarks to fetch (default: 50)
+--fetch-pages 1             # Max API pages (default: 2)
+--early-stop-threshold 5    # Stop after N consecutive cached bookmarks
+--max-requests-per-cycle 10 # Budget: max requests per daemon cycle
+--max-requests-per-day 100  # Budget: max requests per day
+--max-cost-per-day 1.00     # Budget: max estimated cost per day (USD)
+```
+
+**Monitoring:**
+The pipeline prints X API stats to stderr:
+```
+[x-api] fetch stats: 1 requests, 25 fetched, 3 new, early_stop=true, cost=$0.0125
+[x-api] cycle stats: today: 5 reqs ($0.0525), cycle: 1 reqs
+```

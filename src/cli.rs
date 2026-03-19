@@ -50,11 +50,23 @@ pub struct CliArgs {
     #[arg(long = "fetch-endpoint", value_name = "URL", help = "Override X bookmarks endpoint URL")]
     pub fetch_endpoint: Option<String>,
 
-    #[arg(long = "fetch-limit", default_value_t = 100, help = "Maximum bookmarks to fetch")]
+    #[arg(long = "fetch-limit", default_value_t = 50, help = "Maximum bookmarks to fetch (reduced default to save API costs)")]
     pub fetch_limit: usize,
 
-    #[arg(long = "fetch-pages", default_value_t = 5, help = "Maximum bookmark pages to request")]
+    #[arg(long = "fetch-pages", default_value_t = 2, help = "Maximum bookmark pages to request (reduced default to save API costs)")]
     pub fetch_pages: usize,
+
+    #[arg(long = "max-requests-per-cycle", help = "Maximum X API requests per daemon cycle (0 = unlimited)")]
+    pub max_requests_per_cycle: Option<u32>,
+
+    #[arg(long = "max-requests-per-day", help = "Maximum X API requests per day (0 = unlimited)")]
+    pub max_requests_per_day: Option<u32>,
+
+    #[arg(long = "max-cost-per-day", help = "Maximum estimated X API cost per day in USD (0 = unlimited)")]
+    pub max_cost_per_day: Option<f64>,
+
+    #[arg(long = "early-stop-threshold", default_value_t = 5, help = "Stop fetching after N consecutive cached bookmarks")]
+    pub early_stop_threshold: usize,
 
     #[arg(long = "no-cache", help = "Disable cache reads/writes")]
     pub no_cache: bool,

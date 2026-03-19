@@ -27,6 +27,7 @@ fn bootstrap_uses_temp_dotenv_and_performs_dry_run() {
     .unwrap();
 
     let cache_path = workspace.join("bootstrap-cache.db");
+    let x_api_cache_path = workspace.join("bootstrap-x-api.db");
     let binary = env::var("CARGO_BIN_EXE_x_bookmarks_pipeline_rust")
         .ok()
         .map(PathBuf::from)
@@ -45,7 +46,8 @@ fn bootstrap_uses_temp_dotenv_and_performs_dry_run() {
     let output = Command::new(binary)
         .current_dir(&workspace)
         .arg("--cache-path")
-        .arg(cache_path)
+        .arg(&cache_path)
+        .env("X_API_CACHE_PATH", &x_api_cache_path)
         .arg("--clear-cache")
         .env_remove("CEREBRAS_API_KEY")
         .env_remove("XAI_API_KEY")

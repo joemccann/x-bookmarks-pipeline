@@ -2,9 +2,13 @@ use crate::error::{PipelineError, PipelineResult};
 use crate::models::Bookmark;
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Callback to check if a bookmark ID is already cached/completed.
+/// Returns true if the bookmark should be skipped (already processed).
+pub type CacheCheckFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct XBookmarkFetcher {
@@ -14,12 +18,29 @@ pub struct XBookmarkFetcher {
     total_limit: usize,
     max_pages: usize,
     client: Client,
+    /// Stop fetching additional pages when this many consecutive cached bookmarks are found
+    early_stop_threshold: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct XBookmarkPage {
     pub bookmarks: Vec<Bookmark>,
     pub next_page_token: Option<String>,
+}
+
+/// Statistics from a fetch operation
+#[derive(Debug, Clone, Default)]
+pub struct FetchStats {
+    /// Number of API requests made
+    pub api_requests: u32,
+    /// Total bookmarks fetched from API
+    pub total_fetched: usize,
+    /// Bookmarks that were new (not in cache)
+    pub new_bookmarks: usize,
+    /// Whether early termination was triggered
+    pub early_stopped: bool,
+    /// Estimated API cost in USD
+    pub estimated_cost: f64,
 }
 
 impl XBookmarkFetcher {
@@ -31,27 +52,89 @@ impl XBookmarkFetcher {
         max_pages: usize,
         client: Client,
     ) -> Self {
-    Self {
+        Self {
             endpoint: endpoint.into(),
             token: Arc::new(Mutex::new(token.into())),
             page_limit: page_limit.max(1),
             total_limit: total_limit.max(1),
             max_pages: max_pages.max(1),
             client,
+            early_stop_threshold: 10, // Stop if 10+ consecutive cached bookmarks
         }
     }
 
+    /// Set the early stop threshold (consecutive cached bookmarks before stopping)
+    pub fn with_early_stop_threshold(mut self, threshold: usize) -> Self {
+        self.early_stop_threshold = threshold;
+        self
+    }
+
+    /// Standard fetch - returns all bookmarks up to limit
     pub async fn fetch(&self) -> PipelineResult<Vec<Bookmark>> {
+        let (bookmarks, _stats) = self.fetch_with_stats(None).await?;
+        Ok(bookmarks)
+    }
+
+    /// Fetch with early termination when hitting cached bookmarks.
+    /// 
+    /// This is the cost-optimized fetch path:
+    /// - Stops fetching additional pages when consecutive cached bookmarks exceed threshold
+    /// - Returns only NEW bookmarks (not in cache)
+    /// - Tracks statistics for cost monitoring
+    pub async fn fetch_incremental(
+        &self,
+        cached_ids: &HashSet<String>,
+    ) -> PipelineResult<(Vec<Bookmark>, FetchStats)> {
+        let cache_check: CacheCheckFn = {
+            let cached = cached_ids.clone();
+            Arc::new(move |id: &str| cached.contains(id))
+        };
+        self.fetch_with_stats(Some(cache_check)).await
+    }
+
+    /// Internal fetch with optional cache checking and statistics
+    async fn fetch_with_stats(
+        &self,
+        cache_check: Option<CacheCheckFn>,
+    ) -> PipelineResult<(Vec<Bookmark>, FetchStats)> {
         let mut all_bookmarks = Vec::new();
         let mut next_token: Option<String> = None;
         let mut pages = 0usize;
+        let mut stats = FetchStats::default();
+        let mut consecutive_cached = 0usize;
 
         while pages < self.max_pages {
             pages += 1;
+            stats.api_requests += 1;
+
             let page = self.fetch_page(next_token.as_deref()).await?;
             let has_entries = !page.bookmarks.is_empty();
             let next = page.next_page_token;
-            all_bookmarks.extend(page.bookmarks);
+
+            stats.total_fetched += page.bookmarks.len();
+
+            // Process bookmarks with optional cache filtering
+            for bookmark in page.bookmarks {
+                if let Some(ref check) = cache_check {
+                    if check(&bookmark.id) {
+                        consecutive_cached += 1;
+                        // Early termination: if we hit N consecutive cached bookmarks,
+                        // assume we've seen all new content (X returns newest first)
+                        if consecutive_cached >= self.early_stop_threshold {
+                            stats.early_stopped = true;
+                            break;
+                        }
+                        continue; // Skip cached bookmark
+                    }
+                    consecutive_cached = 0; // Reset on new bookmark
+                }
+                stats.new_bookmarks += 1;
+                all_bookmarks.push(bookmark);
+            }
+
+            if stats.early_stopped {
+                break;
+            }
 
             if next.is_none() || all_bookmarks.len() >= self.total_limit {
                 break;
@@ -64,7 +147,11 @@ impl XBookmarkFetcher {
         }
 
         all_bookmarks.truncate(self.total_limit);
-        Ok(all_bookmarks)
+
+        // Calculate estimated cost: $0.05 per 100 bookmarks fetched
+        stats.estimated_cost = (stats.total_fetched as f64 / 100.0) * 0.05;
+
+        Ok((all_bookmarks, stats))
     }
 
     pub async fn set_access_token(&self, token: impl Into<String>) {
