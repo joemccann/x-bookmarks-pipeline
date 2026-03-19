@@ -9,7 +9,7 @@ This repository is a Rust implementation of the X bookmark pipeline with shared 
 - `orchestrator.rs` coordinates bounded worker parallelism and `on_meta_saved` side effects.
 - `notify.rs` implements `SmtpNotifier` via `lettre`; one email per cycle listing new bookmarks only.
 - `error.rs` centralizes `PipelineError` and conversion of external failures.
-- `browser.rs` implements CDP auto-consent (connects to existing Chrome via HTTP discovery on port 9222), tab close after OAuth callback.
+- `browser.rs` implements CDP auto-consent (connects to existing Chrome via HTTP discovery on port 9222), and closes only the OAuth callback tab after auth by exact redirect URI match.
 - `cost.rs` tracks per-bookmark LLM token usage and USD costs with per-provider pricing.
 - `x_api_cache.rs` caches username→user_id mappings, token validation state, and tracks X API request budgets.
 - `main.rs` handles startup, env loading, provider bootstrap, and CLI dispatch.
@@ -84,7 +84,11 @@ The pipeline connects to Chrome's existing DevTools Protocol endpoint to auto-cl
 1. `DevToolsActivePort` in `XPB_CHROME_USER_DATA_DIR` (or default Chrome profile)
 2. HTTP discovery at `http://127.0.0.1:9222/json/version`
 
-After successful OAuth, the localhost callback tab is closed via `/json/close`.
+After successful OAuth, **only the exact OAuth callback tab is closed** via `/json/close`. The match is performed by stripping query parameters from the tab's URL and the configured `redirect_uri`, then doing strict string equality on `scheme://host:port/path`. This ensures dev servers and other localhost tabs are never touched.
+
+The tab close fires in both OAuth code paths:
+- `start_interactive_reauth_flow` — the local-listener / daemon reauth path
+- `--auth-code` — the manual code exchange path
 
 Daemon filters bookmarks against cache before processing — only new bookmarks enter the pipeline. One summary email per cycle lists new bookmarks (URL, category, summary). No email when nothing is new.
 
@@ -92,6 +96,16 @@ Daemon filters bookmarks against cache before processing — only new bookmarks 
 - X API `CreditsDepleted` (402) errors trigger only one notification, then the daemon continues retrying silently
 - Notification resets when credits are replenished and a cycle succeeds
 - Other errors notify after 10 consecutive failures
+
+## Planner resilience
+
+The planner (`src/planner.rs`) handles transient LLM failures gracefully:
+- Empty or whitespace-only responses are detected early with a clear error message
+- JSON is extracted from markdown code fences (` ```json ... ``` `) if present
+- JSON embedded in prose text is extracted by scanning for `{...}` spans
+- Transient empty/invalid-JSON errors are retried up to 2× with 500ms/1000ms backoff
+- Non-transient errors (HTTP failures) are never retried
+- Raw response (first 500 chars) is included in error messages for debugging
 
 ## Notes
 
@@ -144,7 +158,6 @@ The pipeline includes several mechanisms to minimize X API costs:
 ```
 
 **Monitoring:**
-The pipeline prints X API stats to stderr:
 ```
 [x-api] fetch stats: 1 requests, 25 fetched, 3 new, early_stop=true, cost=$0.0125
 [x-api] cycle stats: today: 5 reqs ($0.0525), cycle: 1 reqs

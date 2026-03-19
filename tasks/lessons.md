@@ -28,3 +28,11 @@
 - **X API bookmarks need explicit field expansions**: The bookmarks endpoint returns only `id` and `text` by default. To get author and date, must request `tweet.fields=created_at,author_id`, `expansions=author_id`, and `user.fields=username,name`. Then build a user index from `includes.users` to resolve `author_id` to `@username`.
 - **Don't re-run the entire pipeline to backfill metadata**: When existing meta files need a field update (like adding author/date), patch them directly with a script + API call instead of clearing the cache and re-processing through LLMs.
 - **CDP click strategies should be specific, not greedy**: A "sole submit button" strategy clicked "Try again" on X's error pages instead of "Authorize app" on the consent page. Use `data-testid` and text-match strategies only.
+
+## 2026-03-19
+
+- **LLM planners can return empty strings**: `complete_json()` returned `""` causing `serde_json::from_str` to fail with "expected value at line 1 column 1". Always trim and check for empty before parsing. Include the raw response (first 500 chars) in the error for debuggability.
+- **Extract JSON from LLM prose responses**: Models sometimes wrap JSON in markdown code fences (` ```json ... ``` `) or embed it in explanatory text. Try `from_str` first, then scan for ` ```json ` blocks, then scan for `{...}` spans. Retry up to 2× with exponential backoff for transient empty responses.
+- **Never close browser tabs by URL substring**: `close_tabs_matching("localhost")` closed ALL localhost tabs including dev servers (`localhost:3000`). The correct approach is to pass the exact `redirect_uri` (e.g. `http://localhost:8080/callback`) and match on the base URL (strip query params from both sides, then do strict equality). This is immune to port confusion and path confusion.
+- **OAuth callback close must be in BOTH code paths**: `close_oauth_callback_tab()` was only called in `start_interactive_reauth_flow` (the local-listener path) but not in the `--auth-code` manual exchange path. Both paths must close the tab after a successful token exchange.
+- **Test tab-close logic live before shipping**: Use `cdp.mjs list` to snapshot tabs before and after, with a mix of real callback tabs and dev-server tabs open. Confirmed: exact-match on redirect URI base closes only the callback tab.

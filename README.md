@@ -131,7 +131,7 @@ instance is launched.
 1.  The OAuth URL opens in Chrome (or a configured Chrome app like `Chrome Debug`)
 2.  CDP discovers Chrome via `http://127.0.0.1:9222/json/version` or `DevToolsActivePort`
 3.  Finds the OAuth consent tab and clicks **Authorize app** via `data-testid`
-4.  After the callback is received, the localhost tab is closed automatically
+4.  After the callback is received, **only the exact OAuth callback tab is closed** — other localhost tabs (dev servers, etc.) are never touched
 
 ### Setup
 
