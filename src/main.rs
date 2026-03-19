@@ -1692,6 +1692,8 @@ async fn handle_oauth_commands(args: &CliArgs, http: &Client) -> anyhow::Result<
             println!("Refreshed tokens available for this process; .env not updated.");
         }
         clear_oauth_state();
+        // Close the OAuth callback tab now that the code has been exchanged
+        x_bookmarks_pipeline_rust::browser::close_oauth_callback_tab(&redirect_uri).await;
         if has_processing_inputs(args) {
             return Ok(false);
         }

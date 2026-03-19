@@ -1,0 +1,5 @@
+{
+  "code_verifier": "f4a8713e7c96e63c4c384bacead5b5457caa04c43e1628113a8cdb7b8c78b1dc",
+  "state": "275f9acb0ac52fe4d3cf0881",
+  "redirect_uri": "http://localhost:8080/callback"
+}
