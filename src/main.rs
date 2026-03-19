@@ -1595,13 +1595,74 @@ async fn main() -> Result<()> {
     }
 
     let mut refresh_config = load_refresh_config();
+    
+    // Handle --clear-cache (bookmark cache only)
     if args.clear_cache {
         if let Some(cache) = &cache {
             let removed = cache.clear().await?;
-            println!("cache cleared: {removed}");
+            println!("bookmark cache cleared: {removed} entries");
         } else {
             println!("cache disabled");
         }
+        return Ok(());
+    }
+
+    // Handle --reset (full reset: all caches + output files)
+    if args.reset {
+        println!("Performing full reset...\n");
+        
+        // 1. Clear bookmark cache
+        if let Some(cache) = &cache {
+            let removed = cache.clear().await?;
+            println!("✓ Bookmark cache cleared: {removed} entries");
+        }
+        
+        // 2. Clear X API cache (delete the file)
+        let x_api_cache_path = std::path::Path::new(&cfg.x_api_cache_path);
+        if x_api_cache_path.exists() {
+            match std::fs::remove_file(x_api_cache_path) {
+                Ok(_) => println!("✓ X API cache deleted: {}", cfg.x_api_cache_path),
+                Err(e) => eprintln!("✗ Failed to delete X API cache: {e}"),
+            }
+        } else {
+            println!("✓ X API cache: not present");
+        }
+        
+        // 3. Delete output directory contents
+        let output_path = std::path::Path::new(&cfg.output_dir);
+        if output_path.exists() {
+            let mut files_deleted = 0u64;
+            let mut dirs_deleted = 0u64;
+            
+            // Count and delete
+            fn count_and_delete(path: &std::path::Path, files: &mut u64, dirs: &mut u64) -> std::io::Result<()> {
+                if path.is_dir() {
+                    for entry in std::fs::read_dir(path)? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        if path.is_dir() {
+                            count_and_delete(&path, files, dirs)?;
+                        } else {
+                            std::fs::remove_file(&path)?;
+                            *files += 1;
+                        }
+                    }
+                    std::fs::remove_dir(path)?;
+                    *dirs += 1;
+                }
+                Ok(())
+            }
+            
+            match count_and_delete(output_path, &mut files_deleted, &mut dirs_deleted) {
+                Ok(_) => println!("✓ Output directory deleted: {files_deleted} files, {dirs_deleted} directories"),
+                Err(e) => eprintln!("✗ Failed to fully delete output directory: {e}"),
+            }
+        } else {
+            println!("✓ Output directory: not present");
+        }
+        
+        // 4. Summary
+        println!("\n✓ Full reset complete. Ready to start fresh.");
         return Ok(());
     }
 

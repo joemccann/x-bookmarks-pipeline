@@ -83,8 +83,11 @@ pub struct CliArgs {
     #[arg(long = "no-save", help = "Disable persisting outputs and metadata")]
     pub no_save: bool,
 
-    #[arg(long = "clear-cache", help = "Clear cache and exit")]
+    #[arg(long = "clear-cache", help = "Clear bookmark cache and exit")]
     pub clear_cache: bool,
+
+    #[arg(long = "reset", help = "Full reset: clear all caches and delete output files, then exit")]
+    pub reset: bool,
 
     #[arg(long = "cache-stats", help = "Print cache statistics and exit")]
     pub cache_stats: bool,
