@@ -1709,6 +1709,7 @@ async fn main() -> Result<()> {
 
     let mut cycle = 0usize;
     let mut fail_streak = 0u32;
+    let mut credits_depleted_notified = false;
     loop {
         cycle += 1;
         eprintln!("[daemon] cycle {cycle} starting");
@@ -1727,6 +1728,8 @@ async fn main() -> Result<()> {
         {
             Ok(results) => {
                 fail_streak = 0;
+                // Reset credits depleted flag on success (credits may have been replenished)
+                credits_depleted_notified = false;
                 if let Some(notifier) = &notifier {
                     if !results.is_empty() {
                         let _ = notifier.send_cycle_summary(&results).await;
@@ -1735,14 +1738,39 @@ async fn main() -> Result<()> {
             }
             Err(err) => {
                 fail_streak += 1;
-                eprintln!("cycle {cycle} failed: {err}");
-                if fail_streak == 10 {
+                let err_str = err.to_string();
+                eprintln!("cycle {cycle} failed: {err_str}");
+
+                // Check for X API credits depleted error (402 + CreditsDepleted)
+                let is_credits_depleted = err_str.contains("402")
+                    && (err_str.contains("CreditsDepleted") || err_str.contains("credits"));
+
+                if is_credits_depleted {
+                    if !credits_depleted_notified {
+                        credits_depleted_notified = true;
+                        eprintln!("[daemon] X API credits depleted - will notify once and continue retrying silently");
+                        if let Some(notifier) = &notifier {
+                            let _ = notifier
+                                .send_text(
+                                    "X Bookmarks: API Credits Depleted".to_string(),
+                                    format!(
+                                        "Your X API credits have been depleted. The daemon will continue \
+                                        running and retry automatically when credits are replenished.\n\n\
+                                        Error: {err_str}"
+                                    ),
+                                )
+                                .await;
+                        }
+                    }
+                    // Don't count credits depleted toward fail streak - it's not a transient error
+                    fail_streak = 0;
+                } else if fail_streak == 10 {
                     if let Some(notifier) = &notifier {
                         let _ = notifier
                             .send_text(
                                 format!("X Bookmarks daemon cycle failed (cycle {cycle})"),
                                 format!(
-                                    "Daemon cycle {cycle} failed after {fail_streak} consecutive failures: {err}"
+                                    "Daemon cycle {cycle} failed after {fail_streak} consecutive failures: {err_str}"
                                 ),
                             )
                             .await;
