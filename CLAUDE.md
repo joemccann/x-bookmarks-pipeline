@@ -25,6 +25,24 @@ cargo run -- --help
 
 The binary loads `.env` from current directory at startup.
 
+## Cache Management
+
+```bash
+# View cache statistics
+cargo run -- --cache-stats
+
+# Clear bookmark cache only (keeps output files)
+cargo run -- --clear-cache
+
+# Full reset: clear all caches AND delete output files
+cargo run -- --reset
+```
+
+The `--reset` command performs a complete reset:
+1. Clears bookmark cache (SQLite)
+2. Deletes X API cache file (username mappings, request stats)
+3. Recursively deletes all output files (.meta.json, .pine)
+
 ## Environment
 
 Required API keys:

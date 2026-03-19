@@ -93,6 +93,26 @@ cargo run -- --no-save --no-cache --text "quick reasoning check"
 
 ------------------------------------------------------------------------
 
+# Cache Management
+
+``` bash
+# View cache statistics
+cargo run -- --cache-stats
+
+# Clear bookmark cache only (keeps output files)
+cargo run -- --clear-cache
+
+# Full reset: clear all caches AND delete output files
+cargo run -- --reset
+```
+
+The `--reset` command performs a complete reset:
+- Clears bookmark cache (SQLite)
+- Deletes X API cache file (username mappings, request stats)  
+- Recursively deletes all output files (.meta.json, .pine)
+
+------------------------------------------------------------------------
+
 # OAuth Reauth
 
 When the daemon's X API token expires, the pipeline starts an
