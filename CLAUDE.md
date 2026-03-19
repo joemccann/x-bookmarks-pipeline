@@ -96,6 +96,8 @@ Daemon filters bookmarks against cache before processing — only new bookmarks 
 
 See `tasks/todo.md` for current execution plan and open items.
 
+See `docs/X_API_BOOKMARKS_RESEARCH.md` for research on X API authentication requirements and why OAuth user consent cannot be eliminated.
+
 ## X API Cost Optimization
 
 The pipeline includes several mechanisms to minimize X API costs:
