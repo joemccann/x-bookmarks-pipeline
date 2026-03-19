@@ -5,10 +5,53 @@ use crate::prompts::CLAUDE_PLANNING_SYSTEM_PROMPT;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+/// Try to extract JSON from a response that may contain markdown code blocks or extra text
+fn extract_json_from_response(raw: &str) -> Option<&str> {
+    // Try to find JSON in ```json ... ``` blocks
+    if let Some(start) = raw.find("```json") {
+        let json_start = start + 7;
+        if let Some(end) = raw[json_start..].find("```") {
+            return Some(raw[json_start..json_start + end].trim());
+        }
+    }
+    
+    // Try to find JSON in ``` ... ``` blocks
+    if let Some(start) = raw.find("```") {
+        let block_start = start + 3;
+        // Skip language identifier if present (e.g., ```json\n)
+        let content_start = if let Some(newline) = raw[block_start..].find('\n') {
+            block_start + newline + 1
+        } else {
+            block_start
+        };
+        if let Some(end) = raw[content_start..].find("```") {
+            let potential_json = raw[content_start..content_start + end].trim();
+            // Verify it looks like JSON
+            if potential_json.starts_with('{') || potential_json.starts_with('[') {
+                return Some(potential_json);
+            }
+        }
+    }
+    
+    // Try to find a JSON object directly (starts with { and ends with })
+    if let Some(start) = raw.find('{') {
+        if let Some(end) = raw.rfind('}') {
+            if end > start {
+                return Some(&raw[start..=end]);
+            }
+        }
+    }
+    
+    None
+}
+
 #[derive(Clone)]
 pub struct StrategyPlanner {
     client: Arc<dyn LLMProvider>,
 }
+
+/// Maximum number of retry attempts for transient LLM failures
+const MAX_RETRIES: u32 = 2;
 
 impl StrategyPlanner {
     pub fn new(client: Arc<dyn LLMProvider>) -> Self {
@@ -42,16 +85,92 @@ impl StrategyPlanner {
         })
         .to_string();
 
+        // Retry logic for transient LLM failures (empty responses, etc.)
+        let mut last_error = None;
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                eprintln!(
+                    "[planner] retry attempt {}/{} for tweet {}",
+                    attempt, MAX_RETRIES, classification.tweet_id
+                );
+                // Brief delay before retry
+                tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt as u64)).await;
+            }
+
+            match self.try_plan(&payload, classification, author, tweet_date).await {
+                Ok(plan) => return Ok(plan),
+                Err(e) => {
+                    // Only retry on empty/invalid response errors, not on HTTP errors
+                    let is_retryable = matches!(&e, PipelineError::ProviderResponse { details, .. } 
+                        if details.contains("empty response") || details.contains("Invalid JSON"));
+                    
+                    if is_retryable && attempt < MAX_RETRIES {
+                        eprintln!("[planner] retryable error: {}", e);
+                        last_error = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| PipelineError::ProviderResponse {
+            provider: "planner".to_string(),
+            details: "max retries exceeded".to_string(),
+        }))
+    }
+
+    async fn try_plan(
+        &self,
+        payload: &str,
+        classification: &ClassificationResult,
+        author: &str,
+        tweet_date: &str,
+    ) -> Result<StrategyPlan, PipelineError> {
         let raw = self
             .client
-            .complete_json(CLAUDE_PLANNING_SYSTEM_PROMPT, &payload)
+            .complete_json(CLAUDE_PLANNING_SYSTEM_PROMPT, payload)
             .await
             .map_err(PipelineError::from)?;
 
-        let parsed = serde_json::from_str::<Value>(&raw).map_err(|err| PipelineError::ProviderResponse {
-            provider: "planner".to_string(),
-            details: err.to_string(),
-        })?;
+        // Handle empty or whitespace-only responses
+        let raw_trimmed = raw.trim();
+        if raw_trimmed.is_empty() {
+            return Err(PipelineError::ProviderResponse {
+                provider: "planner".to_string(),
+                details: "LLM returned empty response".to_string(),
+            });
+        }
+
+        // Try to parse as JSON, with fallback for common LLM response issues
+        let parsed = match serde_json::from_str::<Value>(raw_trimmed) {
+            Ok(v) => v,
+            Err(e) => {
+                // Try to extract JSON from markdown code blocks if present
+                if let Some(json_str) = extract_json_from_response(raw_trimmed) {
+                    serde_json::from_str::<Value>(json_str).map_err(|inner_err| {
+                        PipelineError::ProviderResponse {
+                            provider: "planner".to_string(),
+                            details: format!(
+                                "Failed to parse extracted JSON: {}. Original error: {}. Raw response (first 500 chars): {}",
+                                inner_err,
+                                e,
+                                &raw_trimmed[..raw_trimmed.len().min(500)]
+                            ),
+                        }
+                    })?
+                } else {
+                    return Err(PipelineError::ProviderResponse {
+                        provider: "planner".to_string(),
+                        details: format!(
+                            "Invalid JSON response: {}. Raw response (first 500 chars): {}",
+                            e,
+                            &raw_trimmed[..raw_trimmed.len().min(500)]
+                        ),
+                    });
+                }
+            }
+        };
 
         Ok(build_plan_from_json(classification, author, tweet_date, &parsed))
     }
@@ -191,10 +310,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn build_plan_from_json_defaults_when_fields_missing() {
-        let planner = StrategyPlanner::new(Arc::new(MockProvider::default().with_payload(r#"{}"#)));
-        let classification = ClassificationResult {
+    fn sample_classification() -> ClassificationResult {
+        ClassificationResult {
             tweet_id: "t1".to_string(),
             is_finance: true,
             confidence: 0.9,
@@ -207,7 +324,13 @@ mod tests {
             summary: "chart".to_string(),
             raw_text: "text".to_string(),
             image_urls: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn build_plan_from_json_defaults_when_fields_missing() {
+        let planner = StrategyPlanner::new(Arc::new(MockProvider::default().with_payload(r#"{}"#)));
+        let classification = sample_classification();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let plan = runtime
@@ -219,5 +342,71 @@ mod tests {
         assert_eq!(plan.author, "alice");
         assert_eq!(plan.tweet_date, "2026-03-14");
         assert_eq!(plan.raw_tweet_text, "text");
+    }
+
+    #[test]
+    fn plan_fails_on_empty_response() {
+        let planner = StrategyPlanner::new(Arc::new(MockProvider::default().with_payload("")));
+        let classification = sample_classification();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime
+            .block_on(async { planner.plan(&classification, "alice", "2026-03-14", "{}").await });
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty response"), "Expected empty response error, got: {}", err);
+    }
+
+    #[test]
+    fn plan_extracts_json_from_markdown_block() {
+        let payload = r#"Here's the plan:
+```json
+{"ticker": "ETHUSDT", "script_type": "indicator"}
+```
+"#;
+        let planner = StrategyPlanner::new(Arc::new(MockProvider::default().with_payload(payload)));
+        let classification = sample_classification();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(async { planner.plan(&classification, "bob", "2026-03-15", "{}").await })
+            .unwrap();
+
+        assert_eq!(plan.ticker, "ETHUSDT");
+        assert_eq!(plan.script_type, "indicator");
+    }
+
+    #[test]
+    fn plan_extracts_json_from_plain_text_with_json() {
+        let payload = r#"I'll create a strategy for you: {"ticker": "SOLUSDT", "direction": "short"} That should work."#;
+        let planner = StrategyPlanner::new(Arc::new(MockProvider::default().with_payload(payload)));
+        let classification = sample_classification();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(async { planner.plan(&classification, "charlie", "2026-03-16", "{}").await })
+            .unwrap();
+
+        assert_eq!(plan.ticker, "SOLUSDT");
+        assert_eq!(plan.direction, "short");
+    }
+
+    #[test]
+    fn extract_json_from_response_finds_json_block() {
+        let input = "Here's the plan:\n```json\n{\"test\": 1}\n```\nDone.";
+        assert_eq!(extract_json_from_response(input), Some("{\"test\": 1}"));
+    }
+
+    #[test]
+    fn extract_json_from_response_finds_raw_json() {
+        let input = "Starting with {\"key\": \"value\"} and more text";
+        assert_eq!(extract_json_from_response(input), Some("{\"key\": \"value\"}"));
+    }
+
+    #[test]
+    fn extract_json_from_response_returns_none_for_no_json() {
+        let input = "This is just plain text with no JSON";
+        assert_eq!(extract_json_from_response(input), None);
     }
 }
