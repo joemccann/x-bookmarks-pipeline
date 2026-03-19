@@ -365,9 +365,10 @@ async fn discover_ws_url_via_http(port: u16) -> Option<String> {
         .map(String::from)
 }
 
-/// Close Chrome tabs whose URL contains the given substring.
+/// Close the Chrome tab that matches the OAuth callback URL.
+/// Only closes tabs that look like OAuth callbacks (contain "callback" and "code=").
 /// Uses Chrome's `/json/close/{id}` HTTP endpoint — no WebSocket needed.
-pub async fn close_tabs_matching(url_substring: &str) {
+pub async fn close_oauth_callback_tab() {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -384,11 +385,15 @@ pub async fn close_tabs_matching(url_substring: &str) {
 
     for tab in &tabs {
         let tab_url = tab["url"].as_str().unwrap_or("");
-        if tab_url.contains(url_substring) {
+        // Only close tabs that are specifically OAuth callbacks
+        // Must contain both "callback" and "code=" to be considered an OAuth callback
+        let is_oauth_callback = tab_url.contains("callback") && tab_url.contains("code=");
+        if is_oauth_callback {
             if let Some(id) = tab["id"].as_str() {
                 let close_url = format!("http://127.0.0.1:9222/json/close/{id}");
                 let _ = client.get(&close_url).send().await;
-                eprintln!("[cdp] closed tab: {}", &tab_url[..tab_url.len().min(80)]);
+                eprintln!("[cdp] closed OAuth callback tab: {}", &tab_url[..tab_url.len().min(80)]);
+                return; // Only close one tab - the OAuth callback
             }
         }
     }
@@ -686,6 +691,31 @@ mod tests {
             classify_target("http://localhost:8080/callback?code=abc&state=xyz"),
             TargetKind::Callback
         );
+    }
+
+    /// Helper to check if a URL is an OAuth callback (used by close_oauth_callback_tab)
+    fn is_oauth_callback_url(url: &str) -> bool {
+        url.contains("callback") && url.contains("code=")
+    }
+
+    #[test]
+    fn oauth_callback_detection_matches_real_callbacks() {
+        // Real OAuth callback URLs should match
+        assert!(is_oauth_callback_url("http://localhost:8080/callback?code=abc123&state=xyz"));
+        assert!(is_oauth_callback_url("http://127.0.0.1:8080/callback?state=xyz&code=abc123"));
+        assert!(is_oauth_callback_url("https://example.com/oauth/callback?code=test"));
+        
+        // Other localhost URLs should NOT match
+        assert!(!is_oauth_callback_url("http://localhost:3000/dashboard"));
+        assert!(!is_oauth_callback_url("http://localhost:8080/api/users"));
+        assert!(!is_oauth_callback_url("http://localhost:3000/regime"));
+        
+        // URLs with just "callback" but no code should NOT match
+        assert!(!is_oauth_callback_url("http://localhost:8080/callback"));
+        assert!(!is_oauth_callback_url("http://localhost:8080/callback?error=access_denied"));
+        
+        // URLs with just "code=" but no "callback" should NOT match
+        assert!(!is_oauth_callback_url("http://localhost:3000/?code=test"));
     }
 
     #[test]

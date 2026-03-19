@@ -1,12 +1,13 @@
 use crate::cache::BookmarkCache;
 use crate::classifier::FinanceClassifier;
 use crate::config::AppConfig;
-use crate::cost::CostTracker;
+use crate::cost::{CostEntry, CostTracker};
 use crate::error::{PipelineError, PipelineResult};
 use crate::generator::PineScriptGenerator;
 use crate::llm::LLMProvider;
 use crate::models::{
-    Bookmark, ClassificationResult, PipelineResult as PipelineRunResult, StrategyPlan, ValidationResult,
+    Bookmark, ClassificationResult, PipelineResult as PipelineRunResult, StrategyPlan,
+    ValidationResult,
 };
 
 use crate::parser::{parse_chart_json, sanitize_path};
@@ -94,7 +95,11 @@ impl Pipeline {
         }
     }
 
-    pub async fn run_batch(self: Arc<Self>, bookmarks: Vec<Bookmark>, save: bool) -> Vec<PipelineRunResult> {
+    pub async fn run_batch(
+        self: Arc<Self>,
+        bookmarks: Vec<Bookmark>,
+        save: bool,
+    ) -> Vec<PipelineRunResult> {
         let semaphore = Arc::new(Semaphore::new(self.max_parallel_workers));
         let mut handles = Vec::with_capacity(bookmarks.len());
 
@@ -106,13 +111,11 @@ impl Pipeline {
                     let _permit = permit;
                     pipeline.run(bookmark, save).await
                 }),
-                Err(err) => {
-                    tokio::spawn(async move {
-                        let mut failed = PipelineRunResult::new("unknown");
-                        failed.error = format!("Failed acquiring worker slot: {err}");
-                        failed
-                    })
-                }
+                Err(err) => tokio::spawn(async move {
+                    let mut failed = PipelineRunResult::new("unknown");
+                    failed.error = format!("Failed acquiring worker slot: {err}");
+                    failed
+                }),
             };
             handles.push(handle);
         }
@@ -135,7 +138,11 @@ impl Pipeline {
         }
 
         if self.cache_enabled {
-            self.log(&bookmark.id, "cache", "cache enabled, checking completed state");
+            self.log(
+                &bookmark.id,
+                "cache",
+                "cache enabled, checking completed state",
+            );
             if let Some(cache) = &self.cache {
                 if let Ok(true) = cache.has_completed(&bookmark.id).await {
                     self.log(
@@ -160,7 +167,11 @@ impl Pipeline {
         }
 
         let classification = match self
-            .cached_or_classify(&bookmark.id, &mut bookmark.text, bookmark.image_urls.clone())
+            .cached_or_classify(
+                &bookmark.id,
+                &mut bookmark.text,
+                bookmark.image_urls.clone(),
+            )
             .await
         {
             Ok(value) => value,
@@ -183,7 +194,9 @@ impl Pipeline {
             "classify",
             &format!(
                 "classification complete: is_finance={}, has_visual_data={}, topic={}",
-                classification.is_finance, classification.has_visual_data, classification.detected_topic
+                classification.is_finance,
+                classification.has_visual_data,
+                classification.detected_topic
             ),
         );
 
@@ -201,8 +214,15 @@ impl Pipeline {
         result.chart_data = chart_data.clone();
 
         if classification.is_finance {
-            self.log(&bookmark.id, "planner", "finance bookmark detected, running planner");
-            let plan = match self.plan_stage(&bookmark, &classification, chart_data.as_ref()).await {
+            self.log(
+                &bookmark.id,
+                "planner",
+                "finance bookmark detected, running planner",
+            );
+            let plan = match self
+                .plan_stage(&bookmark, &classification, chart_data.as_ref())
+                .await
+            {
                 Ok(value) => value,
                 Err(err) => {
                     self.log(&bookmark.id, "planner", &format!("failed: {err}"));
@@ -211,7 +231,9 @@ impl Pipeline {
                     result.validation = Some(validation);
                     result.error = format!("Planning failed: {err}");
                     if save {
-                        let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), None).await;
+                        let _ = self
+                            .save_meta(&bookmark, &classification, chart_data.as_ref(), None)
+                            .await;
                     }
                     self.log(
                         &bookmark.id,
@@ -231,7 +253,9 @@ impl Pipeline {
                     result.validation = Some(validation);
                     result.error = format!("Generation failed: {err}");
                     if save {
-                        let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), Some(&plan)).await;
+                        let _ = self
+                            .save_meta(&bookmark, &classification, chart_data.as_ref(), Some(&plan))
+                            .await;
                     }
                     self.log(
                         &bookmark.id,
@@ -269,7 +293,9 @@ impl Pipeline {
                 "non-finance bookmark, skipping plan and code generation",
             );
             self.log(&bookmark.id, "save", "persisting non-finance metadata");
-            let _ = self.save_meta(&bookmark, &classification, chart_data.as_ref(), None).await;
+            let _ = self
+                .save_meta(&bookmark, &classification, chart_data.as_ref(), None)
+                .await;
             result.meta_path = Some(self.meta_path_for_bookmark(&bookmark, &classification));
             self.log(&bookmark.id, "save", "non-finance metadata persisted");
         }
@@ -277,7 +303,10 @@ impl Pipeline {
         self.log(
             &bookmark.id,
             "run",
-            &format!("pipeline stage flow complete, finalizing with error={}", result.error.is_empty()),
+            &format!(
+                "pipeline stage flow complete, finalizing with error={}",
+                result.error.is_empty()
+            ),
         );
         self.finalize(bookmark, result, save).await
     }
@@ -332,7 +361,11 @@ impl Pipeline {
                 );
                 return Ok(parse_chart_json(Some(&bookmark.chart_description)));
             }
-            self.log(&bookmark.id, "vision", "vision disabled and no chart description");
+            self.log(
+                &bookmark.id,
+                "vision",
+                "vision disabled and no chart description",
+            );
             return Ok(None);
         }
 
@@ -431,7 +464,11 @@ impl Pipeline {
         Ok(plan)
     }
 
-    async fn script_stage(&self, bookmark: &Bookmark, plan: &StrategyPlan) -> PipelineResult<(String, ValidationResult)> {
+    async fn script_stage(
+        &self,
+        bookmark: &Bookmark,
+        plan: &StrategyPlan,
+    ) -> PipelineResult<(String, ValidationResult)> {
         if self.cache_enabled {
             self.log(&bookmark.id, "generator", "checking cached script");
             if let Some(cache) = &self.cache {
@@ -512,7 +549,11 @@ impl Pipeline {
         result.plan = cache.get_plan(tweet_id).await?;
         result.pine_script = cache.get_script(tweet_id).await?.unwrap_or_default();
         result.chart_data = cache.get_chart_data(tweet_id).await?;
-        result.validation = Some(self.load_validation_from_cache(tweet_id).await.unwrap_or_default());
+        result.validation = Some(
+            self.load_validation_from_cache(tweet_id)
+                .await
+                .unwrap_or_default(),
+        );
         result.meta_path = Some(self.meta_path_for_cached(tweet_id));
         result.output_path = Some(self.output_path_for_cached(tweet_id));
         Ok(result)
@@ -527,7 +568,11 @@ impl Pipeline {
         self.log(
             &bookmark.id,
             "finalize",
-            &format!("finalize start: save_enabled={}, error_empty={}", save, result.error.is_empty()),
+            &format!(
+                "finalize start: save_enabled={}, error_empty={}",
+                save,
+                result.error.is_empty()
+            ),
         );
         if save && result.error.is_empty() {
             if let Some(meta_path) = result.meta_path.as_deref() {
@@ -557,6 +602,29 @@ impl Pipeline {
         result
     }
 
+    fn cost_entries_for_bookmark(&self, bookmark_id: &str) -> Vec<CostEntry> {
+        self.cost_tracker
+            .as_ref()
+            .map(|tracker| {
+                tracker
+                    .entries()
+                    .into_iter()
+                    .filter(|entry| entry.bookmark_id == bookmark_id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn cost_json_for_bookmark(&self, bookmark_id: &str) -> Option<Value> {
+        self.cost_tracker.as_ref()?;
+        let entries = self.cost_entries_for_bookmark(bookmark_id);
+        let total: f64 = entries.iter().map(|entry| entry.cost_usd).sum();
+        Some(serde_json::json!({
+            "total_cost_usd": format!("{:.6}", total),
+            "calls": entries,
+        }))
+    }
+
     async fn save_meta(
         &self,
         bookmark: &Bookmark,
@@ -567,14 +635,7 @@ impl Pipeline {
         let out_dir = self.output_directory(classification);
         fs::create_dir_all(&out_dir).await?;
 
-        let cost_json = self.cost_tracker.as_ref().map(|t| {
-            let entries: Vec<_> = t.entries().into_iter().filter(|e| e.bookmark_id == bookmark.id).collect();
-            let total: f64 = entries.iter().map(|e| e.cost_usd).sum();
-            serde_json::json!({
-                "total_cost_usd": format!("{:.6}", total),
-                "calls": entries,
-            })
-        });
+        let cost_json = self.cost_json_for_bookmark(&bookmark.id);
 
         let meta = serde_json::json!({
             "tweet_id": bookmark.id,
@@ -640,14 +701,7 @@ impl Pipeline {
         let mut meta_path = pine_path.clone();
         meta_path.set_extension("meta.json");
 
-        let cost_json = self.cost_tracker.as_ref().map(|t| {
-            let entries: Vec<_> = t.entries().into_iter().filter(|e| e.bookmark_id == bookmark.id).collect();
-            let total: f64 = entries.iter().map(|e| e.cost_usd).sum();
-            serde_json::json!({
-                "total_cost_usd": format!("{:.6}", total),
-                "calls": entries,
-            })
-        });
+        let cost_json = self.cost_json_for_bookmark(&bookmark.id);
 
         let meta = serde_json::json!({
             "tweet_id": bookmark.id,
@@ -678,10 +732,7 @@ impl Pipeline {
         .await
         .is_err()
         {
-            return (
-                Some(pine_path.to_string_lossy().to_string()),
-                None,
-            );
+            return (Some(pine_path.to_string_lossy().to_string()), None);
         }
 
         (
@@ -693,7 +744,9 @@ impl Pipeline {
     fn output_directory(&self, classification: &ClassificationResult) -> PathBuf {
         let category = sanitize_path(&classification.category);
         let subcategory = sanitize_path(&classification.subcategory);
-        PathBuf::from(&self.output_dir).join(category).join(subcategory)
+        PathBuf::from(&self.output_dir)
+            .join(category)
+            .join(subcategory)
     }
 
     fn output_path_for_cached(&self, tweet_id: &str) -> String {
@@ -704,7 +757,11 @@ impl Pipeline {
         format!("{tweet_id}.meta.json")
     }
 
-    fn meta_path_for_bookmark(&self, bookmark: &Bookmark, classification: &ClassificationResult) -> String {
+    fn meta_path_for_bookmark(
+        &self,
+        bookmark: &Bookmark,
+        classification: &ClassificationResult,
+    ) -> String {
         let dir = self.output_directory(classification);
         let safe_author = sanitize_path(&bookmark.author);
         let date = if bookmark.date.is_empty() {
@@ -712,8 +769,15 @@ impl Pipeline {
         } else {
             &bookmark.date
         };
-        let stem = format!("{}_{}_{}", safe_author, date, &bookmark.id[..bookmark.id.len().min(8)]);
-        dir.join(format!("{stem}.meta.json")).to_string_lossy().to_string()
+        let stem = format!(
+            "{}_{}_{}",
+            safe_author,
+            date,
+            &bookmark.id[..bookmark.id.len().min(8)]
+        );
+        dir.join(format!("{stem}.meta.json"))
+            .to_string_lossy()
+            .to_string()
     }
 }
 
@@ -739,7 +803,11 @@ mod tests {
     }
 
     impl MockProvider {
-        fn new(classify: ClassificationResult, plan: serde_json::Value, generated_script: impl Into<String>) -> Self {
+        fn new(
+            classify: ClassificationResult,
+            plan: serde_json::Value,
+            generated_script: impl Into<String>,
+        ) -> Self {
             Self {
                 classify,
                 plan,
@@ -854,9 +922,19 @@ mod tests {
             "rationale":"r"
         });
 
-        let provider = Arc::new(MockProvider::new(classification.clone(), plan, "strategy(\"Demo\")\nstrategy.exit(\"E\",\"E\", stop=1, limit=2)"));
+        let provider = Arc::new(MockProvider::new(
+            classification.clone(),
+            plan,
+            "strategy(\"Demo\")\nstrategy.exit(\"E\",\"E\", stop=1, limit=2)",
+        ));
         let mut output = std::env::temp_dir();
-        output.push(format!("xbp-output-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        output.push(format!(
+            "xbp-output-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
 
         let pipeline = Arc::new(Pipeline::new(
             provider.clone(),
@@ -879,9 +957,7 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&output);
 
-        let results = pipeline
-            .run_batch(vec![bookmark], true)
-            .await;
+        let results = pipeline.run_batch(vec![bookmark], true).await;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].tweet_id, "tweet-1");
         assert!(results[0].error.is_empty());
@@ -943,7 +1019,10 @@ mod tests {
             )
             .await
             .unwrap();
-        cache.save_script("tweet-1", "strategy(\"Demo\")", true, &[]).await.unwrap();
+        cache
+            .save_script("tweet-1", "strategy(\"Demo\")", true, &[])
+            .await
+            .unwrap();
         cache.mark_completed("tweet-1").await.unwrap();
         cache
             .save_chart_data("tweet-1", &serde_json::json!({"trend":"up"}))
@@ -951,7 +1030,13 @@ mod tests {
             .unwrap();
 
         let mut output = std::env::temp_dir();
-        output.push(format!("xbp-output-cache-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        output.push(format!(
+            "xbp-output-cache-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
 
         let provider = MockProvider::new(
             crate::models::ClassificationResult {
@@ -1037,7 +1122,13 @@ mod tests {
         ));
 
         let mut out_dir = std::env::temp_dir();
-        out_dir.push(format!("xbp-output-hook-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        out_dir.push(format!(
+            "xbp-output-hook-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let _ = std::fs::remove_dir_all(&out_dir);
 
         let hook = Arc::new(|_path: &str| {
@@ -1045,15 +1136,17 @@ mod tests {
                 details: "hook failed".to_string(),
             })
         }) as Arc<dyn Fn(&str) -> Result<(), PipelineError> + Send + Sync>;
-        let pipeline = Arc::new(Pipeline::new(
-            provider.clone(),
-            provider.clone(),
-            provider.clone(),
-            provider,
-            Some(cache.clone()),
-            &MockProvider::config(&out_dir),
-        )
-        .with_on_meta_saved(hook));
+        let pipeline = Arc::new(
+            Pipeline::new(
+                provider.clone(),
+                provider.clone(),
+                provider.clone(),
+                provider,
+                Some(cache.clone()),
+                &MockProvider::config(&out_dir),
+            )
+            .with_on_meta_saved(hook),
+        );
 
         let bookmark = crate::models::Bookmark {
             id: "tweet-1".to_string(),

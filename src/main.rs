@@ -460,8 +460,8 @@ async fn start_interactive_reauth_flow(
     clear_oauth_state();
     println!("OAuth exchange succeeded and token updated.");
 
-    // Close the localhost callback tab in Chrome
-    x_bookmarks_pipeline_rust::browser::close_tabs_matching("localhost").await;
+    // Close only the OAuth callback tab in Chrome (not all localhost tabs)
+    x_bookmarks_pipeline_rust::browser::close_oauth_callback_tab().await;
 
     Ok(true)
 }
@@ -1792,7 +1792,7 @@ async fn main() -> Result<()> {
                 credits_depleted_notified = false;
                 if let Some(notifier) = &notifier {
                     if !results.is_empty() {
-                        let _ = notifier.send_cycle_summary(&results).await;
+                        let _ = notifier.send_cycle_summary(&results, Some(&cost_tracker)).await;
                     }
                 }
             }

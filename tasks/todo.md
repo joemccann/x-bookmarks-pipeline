@@ -1,6 +1,6 @@
 # X Bookmarks Pipeline — Status
 
-Last updated: 2026-03-17
+Last updated: 2026-03-19
 
 ## Completed
 
@@ -24,3 +24,22 @@ Last updated: 2026-03-17
 - [ ] Cache invalidation mechanism (version stamp or `--force-reclassify` flag)
 - [ ] Playwright article scraper for t.co-only bookmarks (Tier 2)
 - [ ] Gmail sending limit handling: batch/throttle notifications or switch to SES
+
+## Current Task
+
+User request: send a test email based on the past 10 bookmarks without re-running the pipeline.
+
+### Dependency Graph
+
+- T1 -> T2
+- T1 -> T3
+
+### Task Plan
+
+- [ ] T1 `depends_on: []` Add a one-off CLI path that loads the most recent saved bookmark `.meta.json` files and renders a test notification email from them.
+- [ ] T2 `depends_on: [T1]` Execute the new command for the last 10 bookmarks and confirm the email was sent via configured SMTP settings.
+- [ ] T3 `depends_on: [T1]` Add targeted coverage where it fits and run the full Rust test suite.
+
+## Review
+
+- Pending.
