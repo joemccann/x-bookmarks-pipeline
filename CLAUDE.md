@@ -70,6 +70,11 @@ After successful OAuth, the localhost callback tab is closed via `/json/close`.
 
 Daemon filters bookmarks against cache before processing — only new bookmarks enter the pipeline. One summary email per cycle lists new bookmarks (URL, category, summary). No email when nothing is new.
 
+**Smart error notifications:**
+- X API `CreditsDepleted` (402) errors trigger only one notification, then the daemon continues retrying silently
+- Notification resets when credits are replenished and a cycle succeeds
+- Other errors notify after 10 consecutive failures
+
 ## Notes
 
 - No Python/Node runtime modules are tracked in this repo.
