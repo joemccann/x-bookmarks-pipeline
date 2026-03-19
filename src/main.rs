@@ -490,9 +490,8 @@ async fn start_interactive_reauth_flow(args: &CliArgs, http: &Client) -> anyhow:
     clear_oauth_state();
     println!("OAuth exchange succeeded and token updated.");
 
-    // Note: We intentionally do NOT auto-close any browser tabs after OAuth.
-    // Previous attempts to close only the callback tab were unreliable and
-    // risked closing unrelated localhost tabs (dev servers, etc.).
+    // Close only the exact OAuth callback tab by matching its full redirect URI
+    x_bookmarks_pipeline_rust::browser::close_oauth_callback_tab(&redirect_uri).await;
 
     Ok(true)
 }
