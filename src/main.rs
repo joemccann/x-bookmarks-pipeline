@@ -1710,7 +1710,6 @@ async fn main() -> Result<()> {
             Arc::clone(&providers.2),
             Arc::clone(&providers.3),
             cache.clone(),
-            notifier.clone(),
             &cfg,
         )
         .with_cache(!args.no_cache)

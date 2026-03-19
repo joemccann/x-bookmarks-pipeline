@@ -8,7 +8,7 @@ use crate::llm::LLMProvider;
 use crate::models::{
     Bookmark, ClassificationResult, PipelineResult as PipelineRunResult, StrategyPlan, ValidationResult,
 };
-use crate::notify::SmtpNotifier;
+
 use crate::parser::{parse_chart_json, sanitize_path};
 use crate::planner::StrategyPlanner;
 use crate::validator::PineScriptValidator;
@@ -28,7 +28,6 @@ pub struct Pipeline {
     vision: VisionAnalyzer,
     validator: PineScriptValidator,
     cache: Option<BookmarkCache>,
-    notifier: Option<Arc<SmtpNotifier>>,
     output_dir: String,
     cache_enabled: bool,
     vision_enabled: bool,
@@ -45,7 +44,6 @@ impl Pipeline {
         planner_client: Arc<dyn LLMProvider>,
         generator_client: Arc<dyn LLMProvider>,
         cache: Option<BookmarkCache>,
-        notifier: Option<Arc<SmtpNotifier>>,
         config: &AppConfig,
     ) -> Self {
         Self {
@@ -55,7 +53,6 @@ impl Pipeline {
             vision: VisionAnalyzer::new(vision),
             validator: PineScriptValidator::new(),
             cache,
-            notifier,
             output_dir: config.output_dir.clone(),
             cache_enabled: true,
             vision_enabled: true,
@@ -867,7 +864,6 @@ mod tests {
             provider.clone(),
             provider,
             Some(cache.clone()),
-            None,
             &MockProvider::config(&output),
         ));
 
@@ -982,7 +978,6 @@ mod tests {
             provider.clone(),
             provider,
             Some(cache.clone()),
-            None,
             &MockProvider::config(&output),
         ));
 
@@ -1056,7 +1051,6 @@ mod tests {
             provider.clone(),
             provider,
             Some(cache.clone()),
-            None,
             &MockProvider::config(&out_dir),
         )
         .with_on_meta_saved(hook));
@@ -1104,7 +1098,6 @@ mod tests {
             bad_provider.clone(),
             bad_provider.clone(),
             bad_provider,
-            None,
             None,
             &MockProvider::config(std::env::temp_dir()),
         ));
