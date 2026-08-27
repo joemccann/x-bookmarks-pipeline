@@ -167,6 +167,93 @@ All failures degrade cleanly to the existing manual flow:
 
 ------------------------------------------------------------------------
 
+# X App Registration
+
+To fetch your bookmarks you need an **X Developer App** with OAuth 2.0
+enabled. Follow these steps once before running the pipeline.
+
+## 1. Create a developer account
+
+1.  Go to [developer.x.com](https://developer.x.com) and sign in with
+    your X account.
+2.  Accept the Developer Agreement and fill in the required use-case
+    information.
+3.  Your account will be provisioned a **Free** tier automatically.
+    Bookmark access requires the **Basic** tier ($100/month). Upgrade
+    under *Products → X API → Subscribe*.
+
+## 2. Create a project and app
+
+1.  In the Developer Portal, click **+ Add Project**.
+2.  Give the project a name (e.g. `x-bookmarks-pipeline`).
+3.  Select the **Basic** access level when prompted.
+4.  Inside the project, click **+ Add App** and give the app a name.
+5.  Copy and save the **API Key** (Consumer Key) and **API Key Secret**
+    shown at this step — they are only shown once.
+
+## 3. Configure OAuth 2.0
+
+1.  Open the app in the portal and go to **Settings → User
+    authentication settings**.
+2.  Click **Set up** (or **Edit**).
+3.  Set **App permissions** to *Read* (bookmarks are read-only).
+4.  Set **Type of App** to *Web App, Automated App or Bot*.
+5.  Add a **Callback URI / Redirect URL**:
+
+    ``` 
+    http://localhost:8080/callback
+    ```
+
+    This must match `X_REDIRECT_URI` in your `.env` (default is
+    `http://localhost:8080/callback`).
+6.  Add a **Website URL** (any valid URL, e.g. `https://example.com`).
+7.  Click **Save**.
+8.  Under the **Keys and tokens** tab, click **Generate** next to
+    *OAuth 2.0 Client ID and Client Secret*. Copy both values.
+
+## 4. Populate your `.env`
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in the credentials obtained above:
+
+```bash
+X_CLIENT_ID=<OAuth 2.0 Client ID>
+X_CLIENT_SECRET=<OAuth 2.0 Client Secret>
+X_OAUTH_SCOPE="tweet.read users.read bookmark.read offline.access"
+X_REDIRECT_URI=http://localhost:8080/callback
+
+# Your numeric X user ID (find it at https://tweeterid.com or similar)
+X_FETCH_USER_ID=<your_numeric_user_id>
+```
+
+The Bearer Token shown under **Keys and tokens → Bearer Token** can be
+used for public-data lookups but **is not sufficient for bookmarks**.
+Leave `X_BEARER_TOKEN` empty until you complete the OAuth flow below.
+
+## 5. Run the initial OAuth flow
+
+Start the pipeline with `--reauth` to open a browser window, grant
+consent, and save a long-lived refresh token to your `.env`:
+
+```bash
+cargo run -- --reauth
+```
+
+1.  A browser window opens to the X authorization page.
+2.  Click **Authorize app** (or let CDP auto-consent handle it — see
+    [OAuth Reauth](#oauth-reauth)).
+3.  After the callback is received the pipeline writes `X_REFRESH_TOKEN`
+    (and optionally `X_BEARER_TOKEN`) back into your `.env`.
+
+Subsequent runs will silently refresh the token in the background. You
+only need to repeat this step if the refresh token expires (~6 months of
+inactivity) or if you change the requested scopes.
+
+------------------------------------------------------------------------
+
 # LLM Cost Tracking
 
 Every LLM API call captures `prompt_tokens` and `completion_tokens`
