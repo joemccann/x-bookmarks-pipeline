@@ -20,6 +20,11 @@ impl UsageInfo {
 /// Per-model pricing in USD per 1M tokens: (input, output).
 /// Updated 2026-03. Conservative estimates; actual pricing may vary.
 fn price_per_million(provider: &str, model: &str) -> (f64, f64) {
+    if let Some(p) = llm_prices::lookup_provider(provider, model) {
+        if let (Some(input), Some(output)) = (p.input, p.output) {
+            return (input, output);
+        }
+    }
     match provider {
         "cerebras" => {
             if model.contains("qwen-3-235b") {
@@ -320,8 +325,8 @@ mod tests {
             output_tokens: 1000,
         };
         let cost = compute_cost(&usage);
-        // (2000 * 15.0 + 1000 * 75.0) / 1_000_000 = 0.105
-        assert!((cost - 0.105).abs() < 1e-10);
+        // (2000 * 5.0 + 1000 * 25.0) / 1_000_000 = 0.035
+        assert!((cost - 0.035).abs() < 1e-10);
     }
 
     #[test]
@@ -333,8 +338,20 @@ mod tests {
             output_tokens: 1500,
         };
         let cost = compute_cost(&usage);
-        // (3000 * 2.0 + 1500 * 8.0) / 1_000_000 = 0.018
-        assert!((cost - 0.018).abs() < 1e-10);
+        // (3000 * 2.5 + 1500 * 15.0) / 1_000_000 = 0.03
+        assert!((cost - 0.03).abs() < 1e-10);
+    }
+
+    #[test]
+    fn compute_cost_claude_haiku_uses_current_price() {
+        let usage = UsageInfo {
+            provider: "claude".to_string(),
+            model: "claude-haiku-4-5".to_string(),
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+        };
+        // Haiku 4.5 is $1/$5, not the Claude 3 Haiku $0.25/$1.25.
+        assert!((compute_cost(&usage) - 6.0).abs() < 1e-10);
     }
 
     #[test]
